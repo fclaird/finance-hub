@@ -1,0 +1,315 @@
+import { getDb } from "@/lib/db";
+import { getUnderlyingExposureRollup } from "@/lib/analytics/optionsExposure";
+
+export type AllocationBucket = {
+  key: string;
+  marketValue: number;
+  weight: number;
+};
+
+export type AllocationResult = {
+  totalMarketValue: number;
+  byAssetClass: AllocationBucket[];
+};
+
+export type AllocationByAccountRow = {
+  accountId: string;
+  accountName: string;
+  totalMarketValue: number;
+  byAssetClass: AllocationBucket[];
+};
+
+export type AllocationBucketedResult = {
+  includeSynthetic: boolean;
+  buckets: Array<{
+    bucketKey: "brokerage" | "retirement";
+    totalMarketValue: number;
+    byAssetClass: AllocationBucket[];
+  }>;
+};
+
+type AssetClass = "equity" | "fund" | "bond" | "cash" | "option" | "other";
+
+function normalizeAssetType(raw: unknown): string {
+  return typeof raw === "string" ? raw.toUpperCase() : "";
+}
+
+function classify(securityType: string, metadataJson: string | null): AssetClass {
+  if (securityType === "option") return "option";
+  if (securityType === "equity") return "equity";
+
+  if (!metadataJson) return "other";
+  try {
+    const parsed = JSON.parse(metadataJson) as { instrument?: { assetType?: unknown } };
+    const t = normalizeAssetType(parsed?.instrument?.assetType);
+    if (t.includes("CASH")) return "cash";
+    if (t.includes("MUTUAL_FUND") || t.includes("ETF") || t.includes("FUND")) return "fund";
+    if (t.includes("FIXED_INCOME") || t.includes("BOND")) return "bond";
+    if (t.includes("EQUITY")) return "equity";
+    if (t.includes("OPTION")) return "option";
+    return "other";
+  } catch {
+    return "other";
+  }
+}
+
+export function getConsolidatedAllocation(includeSynthetic: boolean): AllocationResult {
+  const db = getDb();
+
+  const latestSnapshot = db
+    .prepare(
+      `
+      SELECT hs.id as snapshot_id
+      FROM holding_snapshots hs
+      ORDER BY hs.as_of DESC
+      LIMIT 1
+    `,
+    )
+    .get() as { snapshot_id: string } | undefined;
+
+  if (!latestSnapshot) return { totalMarketValue: 0, byAssetClass: [] };
+
+  const rows = db
+    .prepare(
+      `
+      SELECT s.security_type, p.market_value, p.metadata_json
+      FROM positions p
+      JOIN securities s ON s.id = p.security_id
+      WHERE p.snapshot_id = ?
+    `,
+    )
+    .all(latestSnapshot.snapshot_id) as Array<{
+    security_type: string;
+    market_value: number | null;
+    metadata_json: string | null;
+  }>;
+
+  const buckets = new Map<AssetClass, number>();
+  for (const r of rows) {
+    const mv = r.market_value ?? 0;
+    const cls = classify(r.security_type, r.metadata_json);
+    // Exclude option market value when synthetic is enabled, since we'll represent it as equity exposure instead.
+    if (includeSynthetic && cls === "option") continue;
+    buckets.set(cls, (buckets.get(cls) ?? 0) + mv);
+  }
+
+  if (includeSynthetic) {
+    // Add synthetic option delta exposure into equities bucket.
+    const exposures = getUnderlyingExposureRollup();
+    const syntheticEquityMv = exposures.reduce((sum, e) => sum + e.syntheticMarketValue, 0);
+    buckets.set("equity", (buckets.get("equity") ?? 0) + syntheticEquityMv);
+  }
+
+  const total = Array.from(buckets.values()).reduce((a, b) => a + b, 0);
+  const byAssetClass: AllocationBucket[] = Array.from(buckets.entries())
+    .map(([key, marketValue]) => ({
+      key,
+      marketValue,
+      weight: total ? marketValue / total : 0,
+    }))
+    .sort((a, b) => b.marketValue - a.marketValue);
+
+  return { totalMarketValue: total, byAssetClass };
+}
+
+export function getAllocationByAccount(includeSynthetic: boolean): AllocationByAccountRow[] {
+  const db = getDb();
+
+  // Latest snapshot per account
+  const snapshots = db
+    .prepare(
+      `
+      SELECT a.id AS account_id, a.name AS account_name, a.type AS account_type, hs.id AS snapshot_id
+      FROM accounts a
+      JOIN holding_snapshots hs ON hs.account_id = a.id
+      WHERE hs.as_of = (
+        SELECT MAX(hs2.as_of) FROM holding_snapshots hs2 WHERE hs2.account_id = a.id
+      )
+      ORDER BY a.name ASC
+    `,
+    )
+    .all() as Array<{ account_id: string; account_name: string; account_type: string; snapshot_id: string }>;
+
+  const out: AllocationByAccountRow[] = [];
+
+  for (const s of snapshots) {
+    const rows = db
+      .prepare(
+        `
+        SELECT s.security_type, p.market_value, p.metadata_json
+        FROM positions p
+        JOIN securities s ON s.id = p.security_id
+        WHERE p.snapshot_id = ?
+      `,
+      )
+      .all(s.snapshot_id) as Array<{
+      security_type: string;
+      market_value: number | null;
+      metadata_json: string | null;
+    }>;
+
+    const buckets = new Map<AssetClass, number>();
+    for (const r of rows) {
+      const mv = r.market_value ?? 0;
+      const cls = classify(r.security_type, r.metadata_json);
+      if (includeSynthetic && cls === "option") continue;
+      buckets.set(cls, (buckets.get(cls) ?? 0) + mv);
+    }
+
+    // Per-account synthetic exposure: compute synthetic MV using the same method as consolidated,
+    // but scoped to the account's latest snapshot.
+    if (includeSynthetic) {
+      const syntheticEquityMv = db
+        .prepare(
+          `
+          WITH spot_prices AS (
+            SELECT s.symbol AS underlying_symbol,
+                   CASE WHEN SUM(p.quantity) != 0 THEN SUM(COALESCE(p.market_value, 0)) / SUM(p.quantity) ELSE 0 END AS px
+            FROM positions p
+            JOIN securities s ON s.id = p.security_id
+            WHERE p.snapshot_id = ?
+              AND s.security_type != 'option'
+            GROUP BY s.symbol
+          )
+          SELECT SUM( (p.quantity * 100 * COALESCE(og.delta, 0)) * COALESCE(sp.px, 0) ) AS mv
+          FROM positions p
+          JOIN securities s ON s.id = p.security_id
+          LEFT JOIN securities us ON us.id = s.underlying_security_id
+          LEFT JOIN option_greeks og ON og.position_id = p.id
+          LEFT JOIN spot_prices sp ON sp.underlying_symbol = COALESCE(us.symbol, s.symbol)
+          WHERE p.snapshot_id = ?
+            AND s.security_type = 'option'
+        `,
+        )
+        .get(s.snapshot_id, s.snapshot_id) as { mv: number | null } | undefined;
+
+      buckets.set("equity", (buckets.get("equity") ?? 0) + (syntheticEquityMv?.mv ?? 0));
+    }
+
+    const total = Array.from(buckets.values()).reduce((a, b) => a + b, 0);
+    const byAssetClass: AllocationBucket[] = Array.from(buckets.entries())
+      .map(([key, marketValue]) => ({
+        key,
+        marketValue,
+        weight: total ? marketValue / total : 0,
+      }))
+      .sort((a, b) => b.marketValue - a.marketValue);
+
+    out.push({
+      accountId: s.account_id,
+      accountName: s.account_name,
+      totalMarketValue: total,
+      byAssetClass,
+    });
+  }
+
+  return out;
+}
+
+function accountBucket(accountType: string): "brokerage" | "retirement" {
+  const t = (accountType ?? "").toLowerCase();
+  if (
+    t.includes("ira") ||
+    t.includes("roth") ||
+    t.includes("401") ||
+    t.includes("403") ||
+    t.includes("457") ||
+    t.includes("pension") ||
+    t.includes("retire")
+  ) {
+    return "retirement";
+  }
+  return "brokerage";
+}
+
+export function getAllocationByBucket(includeSynthetic: boolean): AllocationBucketedResult {
+  const db = getDb();
+
+  const snapshots = db
+    .prepare(
+      `
+      SELECT a.id AS account_id, a.type AS account_type, hs.id AS snapshot_id
+      FROM accounts a
+      JOIN holding_snapshots hs ON hs.account_id = a.id
+      WHERE hs.as_of = (
+        SELECT MAX(hs2.as_of) FROM holding_snapshots hs2 WHERE hs2.account_id = a.id
+      )
+    `,
+    )
+    .all() as Array<{ account_id: string; account_type: string; snapshot_id: string }>;
+
+  const byBucket = new Map<"brokerage" | "retirement", Map<AssetClass, number>>();
+
+  for (const s of snapshots) {
+    const bucket = accountBucket(s.account_type);
+    if (!byBucket.has(bucket)) byBucket.set(bucket, new Map());
+    const buckets = byBucket.get(bucket)!;
+
+    const rows = db
+      .prepare(
+        `
+        SELECT s.security_type, p.market_value, p.metadata_json
+        FROM positions p
+        JOIN securities s ON s.id = p.security_id
+        WHERE p.snapshot_id = ?
+      `,
+      )
+      .all(s.snapshot_id) as Array<{
+      security_type: string;
+      market_value: number | null;
+      metadata_json: string | null;
+    }>;
+
+    for (const r of rows) {
+      const mv = r.market_value ?? 0;
+      const cls = classify(r.security_type, r.metadata_json);
+      if (includeSynthetic && cls === "option") continue;
+      buckets.set(cls, (buckets.get(cls) ?? 0) + mv);
+    }
+
+    if (includeSynthetic) {
+      const syntheticEquityMv = db
+        .prepare(
+          `
+          WITH spot_prices AS (
+            SELECT s.symbol AS underlying_symbol,
+                   CASE WHEN SUM(p.quantity) != 0 THEN SUM(COALESCE(p.market_value, 0)) / SUM(p.quantity) ELSE 0 END AS px
+            FROM positions p
+            JOIN securities s ON s.id = p.security_id
+            WHERE p.snapshot_id = ?
+              AND s.security_type != 'option'
+            GROUP BY s.symbol
+          )
+          SELECT SUM( (p.quantity * 100 * COALESCE(og.delta, 0)) * COALESCE(sp.px, 0) ) AS mv
+          FROM positions p
+          JOIN securities s ON s.id = p.security_id
+          LEFT JOIN securities us ON us.id = s.underlying_security_id
+          LEFT JOIN option_greeks og ON og.position_id = p.id
+          LEFT JOIN spot_prices sp ON sp.underlying_symbol = COALESCE(us.symbol, s.symbol)
+          WHERE p.snapshot_id = ?
+            AND s.security_type = 'option'
+        `,
+        )
+        .get(s.snapshot_id, s.snapshot_id) as { mv: number | null } | undefined;
+      buckets.set("equity", (buckets.get("equity") ?? 0) + (syntheticEquityMv?.mv ?? 0));
+    }
+  }
+
+  const outBuckets: AllocationBucketedResult["buckets"] = [];
+  for (const [bucketKey, m] of byBucket.entries()) {
+    const total = Array.from(m.values()).reduce((a, b) => a + b, 0);
+    const byAssetClass: AllocationBucket[] = Array.from(m.entries())
+      .map(([key, marketValue]) => ({
+        key,
+        marketValue,
+        weight: total ? marketValue / total : 0,
+      }))
+      .sort((a, b) => b.marketValue - a.marketValue);
+    outBuckets.push({ bucketKey, totalMarketValue: total, byAssetClass });
+  }
+
+  outBuckets.sort((a, b) => (a.bucketKey === "retirement" ? -1 : 1) - (b.bucketKey === "retirement" ? -1 : 1));
+
+  return { includeSynthetic, buckets: outBuckets };
+}
+
