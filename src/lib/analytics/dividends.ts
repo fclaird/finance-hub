@@ -20,10 +20,6 @@ function monthBoundsUTC(d: Date) {
   return { start, end };
 }
 
-function isoDate(d: Date) {
-  return d.toISOString().slice(0, 10);
-}
-
 export function getDividendSummary(): DividendSummary {
   const db = getDb();
   const now = new Date();

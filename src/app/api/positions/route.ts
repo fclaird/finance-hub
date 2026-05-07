@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { getDb } from "@/lib/db";
+import { latestSnapshotId } from "@/lib/snapshots";
 
 type ParsedOption = {
   expiration: string; // YYYY-MM-DD
@@ -51,19 +52,45 @@ export async function GET(req: Request) {
   const snapshotId = url.searchParams.get("snapshotId");
 
   const db = getDb();
-  const latest = db
+  const latest = latestSnapshotId(db);
+
+  // Default behavior: show the latest snapshot *per account* (Schwab sync writes one snapshot per account).
+  // If a specific snapshotId is provided, show that snapshot only.
+  const snaps =
+    snapshotId != null
+      ? [snapshotId]
+      : (db
+          .prepare(
+            `
+            SELECT hs.id AS snapshot_id
+            FROM holding_snapshots hs
+            JOIN accounts a ON a.id = hs.account_id
+            WHERE a.id LIKE 'schwab_%'
+              AND hs.as_of = (
+                SELECT MAX(hs2.as_of) FROM holding_snapshots hs2 WHERE hs2.account_id = a.id
+              )
+            ORDER BY a.name ASC
+          `,
+          )
+          .all() as Array<{ snapshot_id: string }>)
+          .map((r) => r.snapshot_id);
+
+  if (snaps.length === 0 && !latest) return NextResponse.json({ ok: true, snapshotId: null, positions: [] });
+
+  const today = new Date().toISOString().slice(0, 10);
+  const pxRows = db
     .prepare(
       `
-      SELECT hs.id AS id
-      FROM holding_snapshots hs
-      ORDER BY hs.as_of DESC
-      LIMIT 1
+      SELECT symbol, close
+      FROM price_points
+      WHERE provider = 'schwab' AND date = ?
     `,
     )
-    .get() as { id: string } | undefined;
-
-  const snap = snapshotId ?? latest?.id;
-  if (!snap) return NextResponse.json({ ok: true, snapshotId: null, positions: [] });
+    .all(today) as Array<{ symbol: string; close: number }>;
+  const px = new Map<string, number>();
+  for (const r of pxRows) {
+    if (r.symbol && Number.isFinite(r.close) && r.close > 0) px.set(r.symbol.toUpperCase(), r.close);
+  }
 
   const rows = db
     .prepare(
@@ -90,11 +117,12 @@ export async function GET(req: Request) {
       JOIN securities s ON s.id = p.security_id
       LEFT JOIN securities us ON us.id = s.underlying_security_id
       LEFT JOIN option_greeks og ON og.position_id = p.id
-      WHERE p.snapshot_id = ?
+      WHERE p.snapshot_id IN (SELECT value FROM json_each(@snapshots_json))
+        AND s.security_type != 'cash'
       ORDER BY a.name ASC, s.security_type DESC, s.symbol ASC
     `,
     )
-    .all(snap) as Array<{
+    .all({ snapshots_json: JSON.stringify(snaps) }) as Array<{
     positionId: string;
     asOf: string;
     accountId: string;
@@ -119,13 +147,14 @@ export async function GET(req: Request) {
       SELECT s.symbol AS symbol, SUM(p.quantity) AS qty, SUM(COALESCE(p.market_value, 0)) AS mv
       FROM positions p
       JOIN securities s ON s.id = p.security_id
-      WHERE p.snapshot_id = ?
+      WHERE p.snapshot_id IN (SELECT value FROM json_each(@snapshots_json))
         AND s.security_type != 'option'
+        AND s.security_type != 'cash'
         AND s.symbol IS NOT NULL
       GROUP BY s.symbol
     `,
     )
-    .all(snap) as Array<{ symbol: string; qty: number; mv: number }>;
+    .all({ snapshots_json: JSON.stringify(snaps) }) as Array<{ symbol: string; qty: number; mv: number }>;
 
   const underPx = new Map<string, number>();
   for (const u of underRows) {
@@ -134,8 +163,15 @@ export async function GET(req: Request) {
 
   const out = rows.map((r) => {
     if (r.securityType !== "option") {
+      const sym = (r.symbol ?? "").toUpperCase();
+      const qpx = sym ? px.get(sym) ?? null : null;
+      const price = qpx ?? r.price;
+      const marketValue =
+        price != null && Number.isFinite(price) ? price * (r.quantity ?? 0) : r.marketValue;
       return {
         ...r,
+        price,
+        marketValue,
         optionExpiration: null,
         optionRight: null,
         optionStrike: null,
@@ -172,6 +208,6 @@ export async function GET(req: Request) {
     };
   });
 
-  return NextResponse.json({ ok: true, snapshotId: snap, positions: out });
+  return NextResponse.json({ ok: true, snapshotId: snapshotId ?? latest ?? null, snapshots: snaps, positions: out });
 }
 

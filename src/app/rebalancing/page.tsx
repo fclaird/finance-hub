@@ -2,6 +2,8 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
+import { usePrivacy } from "@/app/components/PrivacyProvider";
+import { formatUsd2 } from "@/lib/format";
 
 type Target = { assetClass: string; targetWeight: number };
 
@@ -15,7 +17,12 @@ type DriftRow = {
   suggestedDeltaMarketValue: number;
 };
 
+function usd2Masked(v: number, masked: boolean) {
+  return formatUsd2(v, { mask: masked });
+}
+
 export default function RebalancingPage() {
+  const privacy = usePrivacy();
   const [includeSynthetic, setIncludeSynthetic] = useState(true);
   const [targets, setTargets] = useState<Target[]>([]);
   const [drift, setDrift] = useState<DriftRow[]>([]);
@@ -82,14 +89,14 @@ export default function RebalancingPage() {
         <div className="flex items-center gap-3">
           <Link
             href="/alerts"
-            className="rounded-full border border-zinc-200 bg-white px-4 py-2 text-sm font-medium text-zinc-900 shadow-sm hover:bg-zinc-50 dark:border-white/10 dark:bg-zinc-950 dark:text-zinc-100 dark:hover:bg-white/5"
+            className="rounded-full border border-zinc-300 bg-white px-4 py-2 text-sm font-medium text-zinc-900 shadow-sm hover:bg-zinc-50 dark:border-white/20 dark:bg-zinc-950 dark:text-zinc-100 dark:hover:bg-white/5"
           >
             Alerts
           </Link>
         </div>
       </div>
 
-      <section className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm dark:border-white/10 dark:bg-zinc-950">
+      <section className="rounded-2xl border border-zinc-300 bg-white p-6 shadow-sm dark:border-white/20 dark:bg-zinc-950">
         <div className="flex flex-wrap items-center justify-between gap-4">
           <label className="flex items-center gap-3 text-sm font-medium">
             <input
@@ -123,30 +130,30 @@ export default function RebalancingPage() {
         <div className="mt-5 overflow-x-auto">
           <table className="w-full border-collapse text-sm">
             <thead>
-              <tr className="border-b border-zinc-200 text-left text-zinc-600 dark:border-white/10 dark:text-zinc-400">
+              <tr className="border-b border-zinc-300 text-left text-zinc-600 dark:border-white/20 dark:text-zinc-400">
                 <th className="py-2 pr-4 font-medium">Asset class</th>
-                <th className="py-2 pr-4 font-medium">Target %</th>
-                <th className="py-2 pr-4 font-medium">Current %</th>
-                <th className="py-2 pr-4 font-medium">Drift</th>
-                <th className="py-2 pr-4 font-medium">Suggested $ delta</th>
+                <th className="py-2 pr-4 text-right font-medium">Target %</th>
+                <th className="py-2 pr-4 text-right font-medium">Current %</th>
+                <th className="py-2 pr-4 text-right font-medium">Drift</th>
+                <th className="py-2 pr-4 text-right font-medium">Suggested $ delta</th>
               </tr>
             </thead>
             <tbody>
               {drift.map((d) => (
-                <tr key={d.assetClass} className="border-b border-zinc-100 dark:border-white/5">
+                <tr key={d.assetClass} className="border-b border-zinc-200 dark:border-white/20">
                   <td className="py-2 pr-4 font-medium">{d.assetClass}</td>
-                  <td className="py-2 pr-4 tabular-nums">
+                  <td className="py-2 pr-4 text-right tabular-nums">
                     <input
-                      className="w-24 rounded-md border border-zinc-200 bg-white px-2 py-1 text-sm dark:border-white/10 dark:bg-zinc-950"
+                      className="w-24 rounded-md border border-zinc-300 bg-white px-2 py-1 text-sm dark:border-white/20 dark:bg-zinc-950"
                       value={((targets.find((t) => t.assetClass === d.assetClass)?.targetWeight ?? 0) * 100).toFixed(2)}
                       onChange={(e) => updateTarget(d.assetClass, Math.max(0, Number(e.target.value) / 100))}
                     />
                   </td>
-                  <td className="py-2 pr-4 tabular-nums">{(d.currentWeight * 100).toFixed(2)}%</td>
-                  <td className="py-2 pr-4 tabular-nums">{(d.drift * 100).toFixed(2)}%</td>
-                  <td className="py-2 pr-4 tabular-nums">
-                    {d.suggestedDeltaMarketValue >= 0 ? "+" : ""}
-                    ${d.suggestedDeltaMarketValue.toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                  <td className="py-2 pr-4 text-right tabular-nums">{(d.currentWeight * 100).toFixed(2)}%</td>
+                  <td className="py-2 pr-4 text-right tabular-nums">{(d.drift * 100).toFixed(2)}%</td>
+                  <td className="py-2 pr-4 text-right tabular-nums">
+                    {d.suggestedDeltaMarketValue >= 0 ? "+" : "-"}
+                    {usd2Masked(Math.abs(d.suggestedDeltaMarketValue), privacy.masked)}
                   </td>
                 </tr>
               ))}

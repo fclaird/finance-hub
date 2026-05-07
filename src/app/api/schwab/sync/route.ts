@@ -5,11 +5,14 @@ import { newId } from "@/lib/id";
 import { logError } from "@/lib/log";
 import { schwabFetch } from "@/lib/schwab/client";
 
+type SchwabAccountNumber = { accountNumber?: string; hashValue?: string };
+
 type SchwabAccount = {
   securitiesAccount: {
     accountId: string;
     type?: string;
     accountNumber?: string;
+    currentBalances?: Record<string, unknown>;
     positions?: Array<{
       instrument: {
         assetType?: string;
@@ -27,12 +30,71 @@ type SchwabAccount = {
   };
 };
 
+function asNumber(v: unknown): number | null {
+  if (typeof v === "number" && Number.isFinite(v)) return v;
+  if (typeof v === "string" && v.trim() !== "" && Number.isFinite(Number(v))) return Number(v);
+  return null;
+}
+
+function pickCashUsd(cb: Record<string, unknown> | undefined): number | null {
+  if (!cb) return null;
+  // Common-ish Schwab/TD-style variants: try several.
+  const keys = [
+    "cashBalance",
+    "cashAvailableForTrading",
+    "cashAvailableForWithdrawal",
+    "availableFundsNonMarginableTrade",
+    "availableFunds",
+    "moneyMarketFund",
+    "sweepVehicle",
+  ];
+  for (const k of keys) {
+    const n = asNumber(cb[k]);
+    if (n != null) return n;
+  }
+  return null;
+}
+
 export async function POST() {
   try {
     const db = getDb();
 
-    // Fetch accounts with positions included (per Schwab docs: fields=positions).
-    const accounts = await schwabFetch<SchwabAccount[]>("/accounts?fields=positions");
+    // Cleanup legacy bad IDs from earlier Schwab sync attempts.
+    db.prepare(`DELETE FROM accounts WHERE id = 'schwab_undefined'`).run();
+    // Purge any legacy demo rows so the app is Schwab-only going forward.
+    db.prepare(`DELETE FROM accounts WHERE id LIKE 'demo_%'`).run();
+
+    // Prefer the all-accounts endpoint (simplest). If Schwab returns 404 in some tenancies,
+    // fall back to accountNumbers + per-account fetches.
+    let accounts: Array<SchwabAccount & { __accountNumber: string | null }> = [];
+    try {
+      const all = await schwabFetch<SchwabAccount[]>("accounts?fields=positions");
+      accounts = all.map((a) => ({ ...a, __accountNumber: a.securitiesAccount.accountNumber ?? null }));
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      // fallback path
+      const acctNums = await schwabFetch<SchwabAccountNumber[]>("accounts/accountNumbers");
+      const refs = acctNums
+        .map((a) => ({ accountNumber: a.accountNumber ?? null, hash: a.hashValue ?? null }))
+        .filter((a) => a.accountNumber || a.hash);
+      accounts = await Promise.all(
+        refs.map(async (a) => {
+          // Try hashValue first; if Schwab responds "Invalid account number", try accountNumber.
+          try {
+            if (a.hash) {
+              const acc = await schwabFetch<SchwabAccount>(`accounts/${encodeURIComponent(a.hash)}` + "?fields=positions");
+              return { ...acc, __accountNumber: a.accountNumber } as SchwabAccount & { __accountNumber: string | null };
+            }
+          } catch (e2) {
+            const m2 = e2 instanceof Error ? e2.message : String(e2);
+            if (!m2.toLowerCase().includes("invalid account number")) throw e2;
+          }
+          if (!a.accountNumber) throw new Error(`Schwab account lookup failed. Prior error: ${msg.slice(0, 200)}`);
+          const acc = await schwabFetch<SchwabAccount>(`accounts/${encodeURIComponent(a.accountNumber)}` + "?fields=positions");
+          return { ...acc, __accountNumber: a.accountNumber } as SchwabAccount & { __accountNumber: string | null };
+        }),
+      );
+    }
 
     const nowIso = new Date().toISOString();
 
@@ -67,19 +129,49 @@ export async function POST() {
   `);
 
     const tx = db.transaction(() => {
+    // Ensure one CASH security exists.
+    insertSecurity.run({
+      id: "sec_CASH",
+      symbol: "CASH",
+      name: "Cash",
+      security_type: "cash",
+      underlying_security_id: null,
+      now: nowIso,
+    });
+
     for (const a of accounts) {
       const sa = a.securitiesAccount;
-      const accountId = `schwab_${sa.accountId}`;
+      const acctIdPart =
+        (sa.accountId != null && String(sa.accountId).trim() !== "" ? String(sa.accountId) : null) ??
+        (a.__accountNumber != null && a.__accountNumber.trim() !== "" ? a.__accountNumber : null) ??
+        (sa.accountNumber != null && String(sa.accountNumber).trim() !== "" ? String(sa.accountNumber) : null) ??
+        newId("schwabacct");
+
+      const accountId = `schwab_${acctIdPart}`;
       upsertAccount.run({
         id: accountId,
         connection_id: connId,
-        name: sa.accountNumber ? `Schwab ${sa.accountNumber}` : `Schwab ${sa.accountId}`,
+        name: a.__accountNumber ? `Schwab ${a.__accountNumber}` : sa.accountNumber ? `Schwab ${sa.accountNumber}` : `Schwab ${sa.accountId}`,
         type: sa.type ?? "brokerage",
         now: nowIso,
       });
 
       const snapshotId = newId("snap");
       insertSnapshot.run({ id: snapshotId, account_id: accountId, as_of: nowIso });
+
+      // Cash row (so each account always shows).
+      const cashUsd = pickCashUsd(sa.currentBalances);
+      if (cashUsd != null && Number.isFinite(cashUsd) && cashUsd !== 0) {
+        insertPosition.run({
+          id: newId("pos"),
+          snapshot_id: snapshotId,
+          security_id: "sec_CASH",
+          quantity: cashUsd,
+          price: 1,
+          market_value: cashUsd,
+          metadata_json: JSON.stringify({ provider: "schwab", kind: "cash_balance", currentBalances: sa.currentBalances }),
+        });
+      }
 
       for (const p of sa.positions ?? []) {
         const symbol = p.instrument.symbol ?? p.instrument.underlyingSymbol ?? "UNKNOWN";

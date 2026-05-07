@@ -1,23 +1,67 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 type SyncResult = { ok: boolean; accounts?: number; error?: string };
 type GreeksResult = { ok: boolean; updated?: number; error?: string };
+type SchwabStatus =
+  | { ok: true; connected: false }
+  | {
+      ok: true;
+      connected: true;
+      obtainedAt: number;
+      expiresAt: number;
+      expiresInSec: number;
+      accessValid: boolean;
+      scope: string | null;
+      tokenType: string | null;
+    }
+  | { ok: false; error: string };
+
+type PlaidHandler = { open: () => void };
+type PlaidLink = {
+  create: (args: { token: string; onSuccess: (public_token: string) => void }) => PlaidHandler;
+};
+
+declare global {
+  interface Window {
+    Plaid?: PlaidLink;
+  }
+}
 
 export default function ConnectionsPage() {
   const [syncing, setSyncing] = useState(false);
   const [result, setResult] = useState<SyncResult | null>(null);
   const [greeks, setGreeks] = useState<GreeksResult | null>(null);
   const [refreshingGreeks, setRefreshingGreeks] = useState(false);
-  const [seeding, setSeeding] = useState(false);
-  const [seedMsg, setSeedMsg] = useState<string | null>(null);
+  const [schwabStatus, setSchwabStatus] = useState<SchwabStatus | null>(null);
+  const [checkingStatus, setCheckingStatus] = useState(false);
 
   const body = useMemo(() => {
     if (!result) return null;
     if (!result.ok) return `Error: ${result.error ?? "Unknown error"}`;
     return `Synced ${result.accounts ?? 0} account(s).`;
   }, [result]);
+
+  async function loadSchwabStatus() {
+    setCheckingStatus(true);
+    try {
+      const resp = await fetch("/api/schwab/status", { cache: "no-store" });
+      const json = (await resp.json()) as SchwabStatus;
+      setSchwabStatus(json);
+    } catch (e) {
+      setSchwabStatus({ ok: false, error: e instanceof Error ? e.message : String(e) });
+    } finally {
+      setCheckingStatus(false);
+    }
+  }
+
+  useEffect(() => {
+    const t = setTimeout(() => {
+      void loadSchwabStatus();
+    }, 0);
+    return () => clearTimeout(t);
+  }, []);
 
   async function syncNow() {
     setSyncing(true);
@@ -27,27 +71,11 @@ export default function ConnectionsPage() {
       const resp = await fetch("/api/schwab/sync", { method: "POST" });
       const json = (await resp.json()) as SyncResult;
       setResult(json);
+      await loadSchwabStatus();
     } catch (e) {
       setResult({ ok: false, error: e instanceof Error ? e.message : String(e) });
     } finally {
       setSyncing(false);
-    }
-  }
-
-  async function seedDemo() {
-    setSeeding(true);
-    setSeedMsg(null);
-    setResult(null);
-    setGreeks(null);
-    try {
-      const resp = await fetch("/api/demo/seed", { method: "POST" });
-      const json = (await resp.json()) as { ok: boolean; error?: string };
-      if (!json.ok) throw new Error(json.error ?? "Failed to seed demo data");
-      setSeedMsg("Demo data loaded. Check Allocation, Performance, Rebalancing, Alerts.");
-    } catch (e) {
-      setSeedMsg(e instanceof Error ? e.message : String(e));
-    } finally {
-      setSeeding(false);
     }
   }
 
@@ -58,6 +86,7 @@ export default function ConnectionsPage() {
       const resp = await fetch("/api/schwab/refresh-greeks", { method: "POST" });
       const json = (await resp.json()) as GreeksResult;
       setGreeks(json);
+      await loadSchwabStatus();
     } catch (e) {
       setGreeks({ ok: false, error: e instanceof Error ? e.message : String(e) });
     } finally {
@@ -74,31 +103,7 @@ export default function ConnectionsPage() {
         </p>
       </div>
 
-      <section className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm dark:border-white/10 dark:bg-zinc-950">
-        <div className="flex items-start justify-between gap-4">
-          <div>
-            <div className="text-base font-semibold">Demo mode</div>
-            <div className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
-              Load realistic sample holdings (including options deltas) to explore the UI without connecting accounts.
-            </div>
-          </div>
-          <button
-            type="button"
-            onClick={seedDemo}
-            disabled={seeding}
-            className="shrink-0 rounded-full bg-zinc-950 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-800 disabled:opacity-50 dark:bg-white dark:text-black dark:hover:bg-zinc-200"
-          >
-            {seeding ? "Loading…" : "Load demo data"}
-          </button>
-        </div>
-        {seedMsg ? (
-          <div className="mt-4 rounded-xl bg-zinc-50 p-3 text-sm text-zinc-800 dark:bg-black/40 dark:text-zinc-200">
-            {seedMsg}
-          </div>
-        ) : null}
-      </section>
-
-      <section className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm dark:border-white/10 dark:bg-zinc-950">
+      <section className="rounded-2xl border border-zinc-300 bg-white p-6 shadow-sm dark:border-white/20 dark:bg-zinc-950">
         <div className="flex items-start justify-between gap-4">
           <div>
             <div className="text-base font-semibold">Schwab</div>
@@ -110,8 +115,51 @@ export default function ConnectionsPage() {
             href="/api/schwab/start"
             className="shrink-0 rounded-full bg-zinc-950 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-800 dark:bg-white dark:text-black dark:hover:bg-zinc-200"
           >
-            Connect Schwab
+            {schwabStatus && schwabStatus.ok && schwabStatus.connected ? "Reconnect Schwab" : "Connect Schwab"}
           </a>
+        </div>
+
+        <div className="mt-3 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-zinc-300 bg-white/60 px-3 py-2 text-xs dark:border-white/20 dark:bg-black/20">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="font-semibold text-zinc-700 dark:text-zinc-300">Status</span>
+            {checkingStatus ? (
+              <span className="text-zinc-600 dark:text-zinc-400">Checking…</span>
+            ) : schwabStatus?.ok === true && schwabStatus.connected ? (
+              <span className="rounded-full bg-emerald-100 px-2 py-0.5 font-semibold text-emerald-900 dark:bg-emerald-500/20 dark:text-emerald-200">
+                Connected
+              </span>
+            ) : schwabStatus?.ok === true && schwabStatus.connected === false ? (
+              <span className="rounded-full bg-amber-100 px-2 py-0.5 font-semibold text-amber-900 dark:bg-amber-500/20 dark:text-amber-200">
+                Not connected
+              </span>
+            ) : schwabStatus?.ok === false ? (
+              <span className="rounded-full bg-red-100 px-2 py-0.5 font-semibold text-red-900 dark:bg-red-950/40 dark:text-red-200">
+                Error
+              </span>
+            ) : (
+              <span className="text-zinc-600 dark:text-zinc-400">—</span>
+            )}
+
+            {schwabStatus?.ok === true && schwabStatus.connected ? (
+              <span className="text-zinc-600 dark:text-zinc-400">
+                Access token: {schwabStatus.accessValid ? "valid" : "expiring (will refresh on next API call)"} · Obtained{" "}
+                {new Date(schwabStatus.obtainedAt).toLocaleString()} · Expires{" "}
+                {new Date(schwabStatus.expiresAt).toLocaleString()}
+              </span>
+            ) : null}
+
+            {schwabStatus?.ok === false ? (
+              <span className="text-zinc-600 dark:text-zinc-400">{schwabStatus.error}</span>
+            ) : null}
+          </div>
+
+          <button
+            type="button"
+            onClick={() => void loadSchwabStatus()}
+            className="rounded-full border border-zinc-300 bg-white px-3 py-1.5 text-xs font-semibold text-zinc-900 hover:bg-zinc-50 dark:border-white/20 dark:bg-zinc-950 dark:text-zinc-100 dark:hover:bg-white/5"
+          >
+            Refresh status
+          </button>
         </div>
 
         <div className="mt-3 text-xs text-zinc-500 dark:text-zinc-500">
@@ -123,7 +171,7 @@ export default function ConnectionsPage() {
             type="button"
             onClick={syncNow}
             disabled={syncing}
-            className="rounded-full border border-zinc-200 bg-white px-4 py-2 text-sm font-medium text-zinc-900 shadow-sm hover:bg-zinc-50 disabled:opacity-50 dark:border-white/10 dark:bg-zinc-950 dark:text-zinc-100 dark:hover:bg-white/5"
+            className="rounded-full border border-zinc-300 bg-white px-4 py-2 text-sm font-medium text-zinc-900 shadow-sm hover:bg-zinc-50 disabled:opacity-50 dark:border-white/20 dark:bg-zinc-950 dark:text-zinc-100 dark:hover:bg-white/5"
           >
             {syncing ? "Syncing…" : "Sync now"}
           </button>
@@ -131,7 +179,7 @@ export default function ConnectionsPage() {
             type="button"
             onClick={refreshGreeks}
             disabled={refreshingGreeks}
-            className="rounded-full border border-zinc-200 bg-white px-4 py-2 text-sm font-medium text-zinc-900 shadow-sm hover:bg-zinc-50 disabled:opacity-50 dark:border-white/10 dark:bg-zinc-950 dark:text-zinc-100 dark:hover:bg-white/5"
+            className="rounded-full border border-zinc-300 bg-white px-4 py-2 text-sm font-medium text-zinc-900 shadow-sm hover:bg-zinc-50 disabled:opacity-50 dark:border-white/20 dark:bg-zinc-950 dark:text-zinc-100 dark:hover:bg-white/5"
           >
             {refreshingGreeks ? "Refreshing greeks…" : "Refresh option greeks"}
           </button>
@@ -160,7 +208,7 @@ export default function ConnectionsPage() {
         ) : null}
       </section>
 
-      <section className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm dark:border-white/10 dark:bg-zinc-950">
+      <section className="rounded-2xl border border-zinc-300 bg-white p-6 shadow-sm dark:border-white/20 dark:bg-zinc-950">
         <div className="text-base font-semibold">Plaid (later)</div>
         <div className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
           We’ll add Plaid as an alternate ingestion path (and for Vanguard 529 later).
@@ -168,11 +216,11 @@ export default function ConnectionsPage() {
         <div className="mt-4 flex flex-wrap items-center gap-3">
           <button
             type="button"
-            className="rounded-full border border-zinc-200 bg-white px-4 py-2 text-sm font-medium text-zinc-900 shadow-sm hover:bg-zinc-50 dark:border-white/10 dark:bg-zinc-950 dark:text-zinc-100 dark:hover:bg-white/5"
+            className="rounded-full border border-zinc-300 bg-white px-4 py-2 text-sm font-medium text-zinc-900 shadow-sm hover:bg-zinc-50 dark:border-white/20 dark:bg-zinc-950 dark:text-zinc-100 dark:hover:bg-white/5"
             onClick={async () => {
               const ensurePlaid = () =>
                 new Promise<void>((resolve, reject) => {
-                  if ((window as any).Plaid) return resolve();
+                  if (window.Plaid) return resolve();
                   const s = document.createElement("script");
                   s.src = "https://cdn.plaid.com/link/v2/stable/link-initialize.js";
                   s.async = true;
@@ -186,7 +234,7 @@ export default function ConnectionsPage() {
               const ltJson = (await ltResp.json()) as { ok: boolean; link_token?: string; error?: string };
               if (!ltJson.ok || !ltJson.link_token) throw new Error(ltJson.error ?? "Failed to create link token");
 
-              const handler = (window as any).Plaid.create({
+              const handler = window.Plaid?.create({
                 token: ltJson.link_token,
                 onSuccess: async (public_token: string) => {
                   await fetch("/api/plaid/exchange", {
@@ -196,6 +244,7 @@ export default function ConnectionsPage() {
                   });
                 },
               });
+              if (!handler) throw new Error("Plaid Link is not available");
               handler.open();
             }}
           >
@@ -203,7 +252,7 @@ export default function ConnectionsPage() {
           </button>
           <button
             type="button"
-            className="rounded-full border border-zinc-200 bg-white px-4 py-2 text-sm font-medium text-zinc-900 shadow-sm hover:bg-zinc-50 dark:border-white/10 dark:bg-zinc-950 dark:text-zinc-100 dark:hover:bg-white/5"
+            className="rounded-full border border-zinc-300 bg-white px-4 py-2 text-sm font-medium text-zinc-900 shadow-sm hover:bg-zinc-50 dark:border-white/20 dark:bg-zinc-950 dark:text-zinc-100 dark:hover:bg-white/5"
             onClick={async () => {
               await fetch("/api/plaid/sync", { method: "POST" });
             }}

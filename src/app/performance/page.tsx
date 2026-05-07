@@ -18,6 +18,8 @@ type BenchPoint = { date: string; close: number };
 export default function PerformancePage() {
   const [series, setSeries] = useState<Point[]>([]);
   const [bucket, setBucket] = useState<"combined" | "retirement" | "brokerage">("combined");
+  const [windowKey, setWindowKey] = useState<"1D" | "1W" | "1M" | "3M" | "6M" | "1Y" | "3Y" | "5Y">("6M");
+  const [nowMs, setNowMs] = useState(() => Date.now());
   const [bench, setBench] = useState<Record<string, BenchPoint[]>>({});
   const [error, setError] = useState<string | null>(null);
 
@@ -27,7 +29,7 @@ export default function PerformancePage() {
       async function safeJson(resp: Response) {
         const text = await resp.text();
         try {
-          return JSON.parse(text) as any;
+          return JSON.parse(text) as unknown;
         } catch {
           const url = resp.url || "(unknown url)";
           throw new Error(
@@ -62,13 +64,60 @@ export default function PerformancePage() {
     })().catch((e) => setError(e instanceof Error ? e.message : String(e)));
   }, [bucket]);
 
+  useEffect(() => {
+    const t = setTimeout(() => setNowMs(Date.now()), 0);
+    return () => clearTimeout(t);
+  }, [bucket, windowKey]);
+
+  const windowStartMs = useMemo(() => {
+    const day = 24 * 60 * 60 * 1000;
+    const map: Record<typeof windowKey, number> = {
+      "1D": 1 * day,
+      "1W": 7 * day,
+      "1M": 30 * day,
+      "3M": 90 * day,
+      "6M": 180 * day,
+      "1Y": 365 * day,
+      "3Y": 3 * 365 * day,
+      "5Y": 5 * 365 * day,
+    };
+    return nowMs - map[windowKey];
+  }, [windowKey, nowMs]);
+
   const chartData = useMemo(() => {
-    // Normalize portfolio + benchmarks to 100 at the first portfolio point.
     if (series.length === 0) return [];
-    const start = series[0]!.totalMarketValue || 1;
+    const filtered = series.filter((p) => new Date(p.asOf).getTime() >= windowStartMs);
+    if (filtered.length === 0) return [];
+    const start = filtered[0]!.totalMarketValue || 1;
+    const startIso = new Date(filtered[0]!.asOf).toISOString().slice(0, 10);
 
     // Helper to find closest benchmark close on or before the date.
-    const getBenchNorm = (sym: string, isoDate: string) => {
+    const baselineClose = (sym: string) => {
+      const s = bench[sym] ?? [];
+      if (s.length === 0) return null;
+      let lo = 0;
+      let hi = s.length - 1;
+      let idx = -1;
+      while (lo <= hi) {
+        const mid = (lo + hi) >> 1;
+        if (s[mid]!.date <= startIso) {
+          idx = mid;
+          lo = mid + 1;
+        } else {
+          hi = mid - 1;
+        }
+      }
+      if (idx < 0) return null;
+      const c = s[idx]!.close;
+      return Number.isFinite(c) && c > 0 ? c : null;
+    };
+
+    const baseline = {
+      SPY: baselineClose("SPY"),
+      QQQ: baselineClose("QQQ"),
+    };
+
+    const getBenchPct = (sym: "SPY" | "QQQ", isoDate: string) => {
       const s = bench[sym] ?? [];
       if (s.length === 0) return null;
       // ISO dates sort lexicographically
@@ -85,21 +134,30 @@ export default function PerformancePage() {
         }
       }
       if (idx < 0) return null;
-      const first = s[0]!.close || 1;
-      return (s[idx]!.close / first) * 100;
+      const base = baseline[sym];
+      if (base == null) return null;
+      const close = s[idx]!.close;
+      if (!Number.isFinite(close) || close <= 0) return null;
+      return ((close / base) - 1) * 100;
     };
 
-    return series.map((p) => {
+    return filtered.map((p) => {
       const isoDate = new Date(p.asOf).toISOString().slice(0, 10);
       return {
         asOf: p.asOf,
         asOfLabel: new Date(p.asOf).toLocaleDateString(),
-        portfolio: (p.totalMarketValue / start) * 100,
-        SPY: getBenchNorm("SPY", isoDate),
-        QQQ: getBenchNorm("QQQ", isoDate),
+        portfolio: ((p.totalMarketValue / start) - 1) * 100,
+        SPY: getBenchPct("SPY", isoDate),
+        QQQ: getBenchPct("QQQ", isoDate),
       };
     });
-  }, [series, bench]);
+  }, [series, bench, windowStartMs]);
+
+  const COLORS = {
+    portfolio: "#0f766e",
+    SPY: "#2563eb",
+    QQQ: "#7c3aed",
+  } as const;
 
   return (
     <div className="mx-auto flex w-full max-w-6xl flex-1 flex-col gap-6 px-6 py-8">
@@ -113,23 +171,23 @@ export default function PerformancePage() {
         <div className="flex items-center gap-3">
           <Link
             href="/connections"
-            className="rounded-full border border-zinc-200 bg-white px-4 py-2 text-sm font-medium text-zinc-900 shadow-sm hover:bg-zinc-50 dark:border-white/10 dark:bg-zinc-950 dark:text-zinc-100 dark:hover:bg-white/5"
+            className="rounded-full border border-zinc-300 bg-white px-4 py-2 text-sm font-medium text-zinc-900 shadow-sm hover:bg-zinc-50 dark:border-white/20 dark:bg-zinc-950 dark:text-zinc-100 dark:hover:bg-white/5"
           >
             Connections
           </Link>
           <Link
             href="/allocation"
-            className="rounded-full border border-zinc-200 bg-white px-4 py-2 text-sm font-medium text-zinc-900 shadow-sm hover:bg-zinc-50 dark:border-white/10 dark:bg-zinc-950 dark:text-zinc-100 dark:hover:bg-white/5"
+            className="rounded-full border border-zinc-300 bg-white px-4 py-2 text-sm font-medium text-zinc-900 shadow-sm hover:bg-zinc-50 dark:border-white/20 dark:bg-zinc-950 dark:text-zinc-100 dark:hover:bg-white/5"
           >
             Allocation
           </Link>
         </div>
       </div>
 
-      <section className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm dark:border-white/10 dark:bg-zinc-950">
+      <section className="rounded-2xl border border-zinc-300 bg-white p-6 shadow-sm dark:border-white/20 dark:bg-zinc-950">
         <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-          <div className="text-sm font-medium">Bucket</div>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-3">
+            <div className="text-sm font-medium">Bucket</div>
             {(["combined", "retirement", "brokerage"] as const).map((b) => (
               <button
                 key={b}
@@ -139,12 +197,46 @@ export default function PerformancePage() {
                   "rounded-full px-4 py-2 text-sm font-medium " +
                   (bucket === b
                     ? "bg-zinc-950 text-white dark:bg-white dark:text-black"
-                    : "border border-zinc-200 bg-white text-zinc-900 shadow-sm hover:bg-zinc-50 dark:border-white/10 dark:bg-zinc-950 dark:text-zinc-100 dark:hover:bg-white/5")
+                    : "border border-zinc-300 bg-white text-zinc-900 shadow-sm hover:bg-zinc-50 dark:border-white/20 dark:bg-zinc-950 dark:text-zinc-100 dark:hover:bg-white/5")
                 }
               >
                 {b === "combined" ? "Combined" : b === "retirement" ? "Retirement" : "Brokerage"}
               </button>
             ))}
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="text-sm font-medium">Window</div>
+            {(["1D", "1W", "1M", "3M", "6M", "1Y", "3Y", "5Y"] as const).map((w) => (
+              <button
+                key={w}
+                type="button"
+                onClick={() => setWindowKey(w)}
+                className={
+                  "rounded-full px-3 py-1.5 text-sm font-medium " +
+                  (windowKey === w
+                    ? "bg-zinc-950 text-white dark:bg-white dark:text-black"
+                    : "border border-zinc-300 bg-white text-zinc-900 shadow-sm hover:bg-zinc-50 dark:border-white/20 dark:bg-zinc-950 dark:text-zinc-100 dark:hover:bg-white/5")
+                }
+              >
+                {w}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="mb-3 flex flex-wrap items-center gap-4 text-sm text-zinc-600 dark:text-zinc-400">
+          <div className="inline-flex items-center gap-2">
+            <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: COLORS.portfolio }} />
+            <span>Portfolio</span>
+          </div>
+          <div className="inline-flex items-center gap-2">
+            <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: COLORS.SPY }} />
+            <span>SPY</span>
+          </div>
+          <div className="inline-flex items-center gap-2">
+            <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: COLORS.QQQ }} />
+            <span>QQQ</span>
           </div>
         </div>
 
@@ -164,16 +256,14 @@ export default function PerformancePage() {
               <LineChart data={chartData}>
                 <CartesianGrid strokeDasharray="3 3" />
                 <XAxis dataKey="asOfLabel" tick={false} />
-                <YAxis
-                  tickFormatter={(v) => `${Number(v).toFixed(0)}`}
-                />
+                <YAxis tickFormatter={(v) => `${Number(v).toFixed(0)}%`} />
                 <Tooltip
-                  formatter={(v) => `${Number(v).toFixed(2)}`}
+                  formatter={(v) => `${Number(v).toFixed(2)}%`}
                   labelFormatter={(l) => String(l)}
                 />
-                <Line type="monotone" dataKey="portfolio" name="Portfolio" strokeWidth={2} dot={false} />
-                <Line type="monotone" dataKey="SPY" name="SPY" strokeWidth={2} dot={false} stroke="#2563eb" />
-                <Line type="monotone" dataKey="QQQ" name="QQQ" strokeWidth={2} dot={false} stroke="#7c3aed" />
+                <Line type="monotone" dataKey="portfolio" name="Portfolio" strokeWidth={2} dot={false} stroke={COLORS.portfolio} />
+                <Line type="monotone" dataKey="SPY" name="SPY" strokeWidth={2} dot={false} stroke={COLORS.SPY} />
+                <Line type="monotone" dataKey="QQQ" name="QQQ" strokeWidth={2} dot={false} stroke={COLORS.QQQ} />
               </LineChart>
             </ResponsiveContainer>
           </div>

@@ -24,9 +24,36 @@ export function getDb(): Database.Database {
   return _db;
 }
 
+function columnNames(db: Database.Database, table: string): Set<string> {
+  const rows = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+  return new Set(rows.map((r) => r.name));
+}
+
+function ensureColumn(db: Database.Database, table: string, name: string, ddl: string) {
+  if (columnNames(db, table).has(name)) return;
+  db.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
+}
+
 function migrate(db: Database.Database) {
   const schema = readSchemaSql();
   db.exec(schema);
+  // Lightweight ALTERs for existing SQLite files created before new columns.
+  const hasAccounts = db
+    .prepare(`SELECT 1 FROM sqlite_master WHERE type='table' AND name='accounts' LIMIT 1`)
+    .get();
+  if (hasAccounts) {
+    ensureColumn(db, "accounts", "nickname", "nickname TEXT");
+  }
+  const hasEarningsMetrics = db
+    .prepare(`SELECT 1 FROM sqlite_master WHERE type='table' AND name='earnings_opp_metrics' LIMIT 1`)
+    .get();
+  if (hasEarningsMetrics) {
+    ensureColumn(db, "earnings_opp_metrics", "session_volume", "session_volume REAL");
+    ensureColumn(db, "earnings_opp_metrics", "iv_over_hist_vol", "iv_over_hist_vol REAL");
+    ensureColumn(db, "earnings_opp_metrics", "relative_volume_index", "relative_volume_index REAL");
+    ensureColumn(db, "earnings_opp_metrics", "avg_dollar_volume_20d", "avg_dollar_volume_20d REAL");
+    ensureColumn(db, "earnings_opp_metrics", "dollar_liquidity_score", "dollar_liquidity_score REAL");
+  }
   // In Phase 1 we keep migrations as a single schema file; we can add proper migration files later.
   const name = "0001_init";
   const exists = db

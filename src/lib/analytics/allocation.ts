@@ -1,5 +1,8 @@
 import { getDb } from "@/lib/db";
 import { getUnderlyingExposureRollup } from "@/lib/analytics/optionsExposure";
+import { latestSnapshotId } from "@/lib/snapshots";
+import type { DataMode } from "@/lib/dataMode";
+import { bucketFromAccount } from "@/lib/accountBuckets";
 
 export type AllocationBucket = {
   key: string;
@@ -53,21 +56,10 @@ function classify(securityType: string, metadataJson: string | null): AssetClass
   }
 }
 
-export function getConsolidatedAllocation(includeSynthetic: boolean): AllocationResult {
+export function getConsolidatedAllocation(includeSynthetic: boolean, mode: DataMode = "auto"): AllocationResult {
   const db = getDb();
-
-  const latestSnapshot = db
-    .prepare(
-      `
-      SELECT hs.id as snapshot_id
-      FROM holding_snapshots hs
-      ORDER BY hs.as_of DESC
-      LIMIT 1
-    `,
-    )
-    .get() as { snapshot_id: string } | undefined;
-
-  if (!latestSnapshot) return { totalMarketValue: 0, byAssetClass: [] };
+  const snapshotId = latestSnapshotId(db, mode);
+  if (!snapshotId) return { totalMarketValue: 0, byAssetClass: [] };
 
   const rows = db
     .prepare(
@@ -76,9 +68,10 @@ export function getConsolidatedAllocation(includeSynthetic: boolean): Allocation
       FROM positions p
       JOIN securities s ON s.id = p.security_id
       WHERE p.snapshot_id = ?
+        AND s.security_type != 'cash'
     `,
     )
-    .all(latestSnapshot.snapshot_id) as Array<{
+    .all(snapshotId) as Array<{
     security_type: string;
     market_value: number | null;
     metadata_json: string | null;
@@ -95,7 +88,7 @@ export function getConsolidatedAllocation(includeSynthetic: boolean): Allocation
 
   if (includeSynthetic) {
     // Add synthetic option delta exposure into equities bucket.
-    const exposures = getUnderlyingExposureRollup();
+    const exposures = getUnderlyingExposureRollup(mode);
     const syntheticEquityMv = exposures.reduce((sum, e) => sum + e.syntheticMarketValue, 0);
     buckets.set("equity", (buckets.get("equity") ?? 0) + syntheticEquityMv);
   }
@@ -112,7 +105,7 @@ export function getConsolidatedAllocation(includeSynthetic: boolean): Allocation
   return { totalMarketValue: total, byAssetClass };
 }
 
-export function getAllocationByAccount(includeSynthetic: boolean): AllocationByAccountRow[] {
+export function getAllocationByAccount(includeSynthetic: boolean, mode: DataMode = "auto"): AllocationByAccountRow[] {
   const db = getDb();
 
   // Latest snapshot per account
@@ -125,10 +118,14 @@ export function getAllocationByAccount(includeSynthetic: boolean): AllocationByA
       WHERE hs.as_of = (
         SELECT MAX(hs2.as_of) FROM holding_snapshots hs2 WHERE hs2.account_id = a.id
       )
+        AND (
+          @mode = 'auto'
+          OR (@mode = 'schwab' AND a.id LIKE 'schwab_%')
+        )
       ORDER BY a.name ASC
     `,
     )
-    .all() as Array<{ account_id: string; account_name: string; account_type: string; snapshot_id: string }>;
+    .all({ mode }) as Array<{ account_id: string; account_name: string; account_type: string; snapshot_id: string }>;
 
   const out: AllocationByAccountRow[] = [];
 
@@ -140,6 +137,7 @@ export function getAllocationByAccount(includeSynthetic: boolean): AllocationByA
         FROM positions p
         JOIN securities s ON s.id = p.security_id
         WHERE p.snapshot_id = ?
+          AND s.security_type != 'cash'
       `,
       )
       .all(s.snapshot_id) as Array<{
@@ -206,29 +204,13 @@ export function getAllocationByAccount(includeSynthetic: boolean): AllocationByA
   return out;
 }
 
-function accountBucket(accountType: string): "brokerage" | "retirement" {
-  const t = (accountType ?? "").toLowerCase();
-  if (
-    t.includes("ira") ||
-    t.includes("roth") ||
-    t.includes("401") ||
-    t.includes("403") ||
-    t.includes("457") ||
-    t.includes("pension") ||
-    t.includes("retire")
-  ) {
-    return "retirement";
-  }
-  return "brokerage";
-}
-
 export function getAllocationByBucket(includeSynthetic: boolean): AllocationBucketedResult {
   const db = getDb();
 
   const snapshots = db
     .prepare(
       `
-      SELECT a.id AS account_id, a.type AS account_type, hs.id AS snapshot_id
+      SELECT a.id AS account_id, a.name AS account_name, a.nickname AS account_nickname, hs.id AS snapshot_id
       FROM accounts a
       JOIN holding_snapshots hs ON hs.account_id = a.id
       WHERE hs.as_of = (
@@ -236,12 +218,12 @@ export function getAllocationByBucket(includeSynthetic: boolean): AllocationBuck
       )
     `,
     )
-    .all() as Array<{ account_id: string; account_type: string; snapshot_id: string }>;
+    .all() as Array<{ account_id: string; account_name: string; account_nickname: string | null; snapshot_id: string }>;
 
   const byBucket = new Map<"brokerage" | "retirement", Map<AssetClass, number>>();
 
   for (const s of snapshots) {
-    const bucket = accountBucket(s.account_type);
+    const bucket = bucketFromAccount(s.account_name, s.account_nickname);
     if (!byBucket.has(bucket)) byBucket.set(bucket, new Map());
     const buckets = byBucket.get(bucket)!;
 
@@ -252,6 +234,7 @@ export function getAllocationByBucket(includeSynthetic: boolean): AllocationBuck
         FROM positions p
         JOIN securities s ON s.id = p.security_id
         WHERE p.snapshot_id = ?
+          AND s.security_type != 'cash'
       `,
       )
       .all(s.snapshot_id) as Array<{

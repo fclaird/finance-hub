@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 
 import { getDb } from "@/lib/db";
 import { newId } from "@/lib/id";
+import { latestSnapshotId } from "@/lib/snapshots";
 import { schwabMarketFetch } from "@/lib/schwab/client";
 
 type QuotePayload = Record<string, unknown>;
@@ -33,18 +34,28 @@ function extractQuoteObject(entry: unknown): Record<string, unknown> | null {
 export async function POST() {
   const db = getDb();
 
-  const latestSnapshot = db
+  const latest = latestSnapshotId(db, "schwab") ?? latestSnapshotId(db);
+
+  // Match Positions API behavior: latest snapshot per Schwab account.
+  const snaps = (db
     .prepare(
       `
-      SELECT hs.id as snapshot_id
+      SELECT hs.id AS snapshot_id
       FROM holding_snapshots hs
-      ORDER BY hs.as_of DESC
-      LIMIT 1
+      JOIN accounts a ON a.id = hs.account_id
+      WHERE a.id LIKE 'schwab_%'
+        AND hs.as_of = (
+          SELECT MAX(hs2.as_of) FROM holding_snapshots hs2 WHERE hs2.account_id = a.id
+        )
+      ORDER BY a.name ASC
     `,
     )
-    .get() as { snapshot_id: string } | undefined;
+    .all() as Array<{ snapshot_id: string }>)
+    .map((r) => r.snapshot_id);
 
-  if (!latestSnapshot) {
+  const snapshotIds = snaps.length ? snaps : latest ? [latest] : [];
+
+  if (snapshotIds.length === 0) {
     return NextResponse.json({ ok: false, error: "No holdings snapshots yet. Run sync first." }, { status: 400 });
   }
 
@@ -55,11 +66,11 @@ export async function POST() {
       FROM positions p
       JOIN securities s ON s.id = p.security_id
       LEFT JOIN option_greeks og ON og.position_id = p.id
-      WHERE p.snapshot_id = ?
+      WHERE p.snapshot_id IN (SELECT value FROM json_each(@snapshots_json))
         AND s.security_type = 'option'
     `,
     )
-    .all(latestSnapshot.snapshot_id) as Array<{ position_id: string; symbol: string }>;
+    .all({ snapshots_json: JSON.stringify(snapshotIds) }) as Array<{ position_id: string; symbol: string }>;
 
   const symbols = Array.from(new Set(optionPositions.map((p) => p.symbol).filter(Boolean)));
   if (symbols.length === 0) {

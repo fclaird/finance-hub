@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS accounts (
   id TEXT PRIMARY KEY,
   connection_id TEXT NOT NULL REFERENCES institution_connections(id) ON DELETE CASCADE,
   name TEXT NOT NULL,
+  nickname TEXT,
   type TEXT NOT NULL,
   currency TEXT NOT NULL DEFAULT 'USD',
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -66,6 +67,17 @@ CREATE TABLE IF NOT EXISTS option_greeks (
   theta REAL,
   vega REAL,
   iv REAL,
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Security taxonomy / fundamentals caching (sector, industry, etc.)
+CREATE TABLE IF NOT EXISTS security_taxonomy (
+  symbol TEXT PRIMARY KEY,
+  sector TEXT,
+  industry TEXT,
+  market_cap_bucket TEXT, -- 'mega' | 'large' | 'mid' | 'small' | 'micro' | 'unknown'
+  revenue_geo_bucket TEXT, -- 'US' | 'Intl' | 'Mixed' | 'unknown'
+  source TEXT, -- 'schwab' | 'manual' | etc.
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -120,5 +132,46 @@ CREATE TABLE IF NOT EXISTS cashflows (
   ex_date TEXT,
   pay_date TEXT NOT NULL, -- ISO date or datetime
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Upcoming / recent earnings + trade-opportunity metrics (IV vs “normal”, dollar liquidity).
+-- IV fields are intended for Schwab (or other broker) enrichment; calendar often comes from Finnhub.
+CREATE TABLE IF NOT EXISTS earnings_events (
+  id TEXT PRIMARY KEY,
+  symbol TEXT NOT NULL COLLATE NOCASE,
+  security_id TEXT REFERENCES securities(id) ON DELETE SET NULL,
+  earnings_date TEXT NOT NULL, -- YYYY-MM-DD
+  fiscal_period_end TEXT,
+  time_of_day TEXT, -- 'bmo' | 'amc' | 'dmh' | ''
+  source TEXT NOT NULL, -- 'finnhub' | 'demo' | 'schwab' | 'manual'
+  raw_json TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(symbol, earnings_date)
+);
+
+CREATE INDEX IF NOT EXISTS idx_earnings_events_date ON earnings_events(earnings_date);
+CREATE INDEX IF NOT EXISTS idx_earnings_events_symbol ON earnings_events(symbol);
+
+CREATE TABLE IF NOT EXISTS earnings_opp_metrics (
+  id TEXT PRIMARY KEY,
+  earnings_event_id TEXT NOT NULL UNIQUE REFERENCES earnings_events(id) ON DELETE CASCADE,
+  as_of TEXT NOT NULL,
+  iv_current REAL,
+  iv_52w_high REAL,
+  iv_52w_low REAL,
+  iv_rank_pct REAL,
+  hist_vol_30d REAL,
+  avg_share_volume_20d REAL,
+  avg_share_volume_5d REAL,
+  volume_ratio REAL,
+  session_volume REAL,
+  iv_over_hist_vol REAL,
+  relative_volume_index REAL,
+  avg_dollar_volume_20d REAL,
+  dollar_liquidity_score REAL,
+  opportunity_score REAL,
+  metrics_source TEXT,
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 

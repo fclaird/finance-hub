@@ -14,7 +14,11 @@ export async function POST() {
     const db = getDb();
     const client = getPlaidClient();
     const secrets = loadSecrets(getSecretsPassphrase());
-    const plaidBag = ((secrets.tokens ?? {}) as any).plaid as Record<string, PlaidStoredItem> | undefined;
+    const tokens = secrets.tokens as unknown;
+    const plaidBag =
+      tokens && typeof tokens === "object" && "plaid" in tokens
+        ? ((tokens as Record<string, unknown>).plaid as Record<string, PlaidStoredItem> | undefined)
+        : undefined;
 
     if (!plaidBag || Object.keys(plaidBag).length === 0) {
       return NextResponse.json({ ok: false, error: "Plaid not connected yet." }, { status: 400 });

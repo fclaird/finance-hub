@@ -1,6 +1,8 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
+import { LiveStatusBanner } from "@/app/components/LiveStatusBanner";
+import { PrivacyProvider } from "@/app/components/PrivacyProvider";
 import { SidebarNav } from "@/app/components/SidebarNav";
 
 const geistSans = Geist({
@@ -29,10 +31,15 @@ export default function RootLayout({
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
       <body className="min-h-full bg-zinc-50 text-zinc-950 dark:bg-black dark:text-zinc-50">
-        <div className="flex min-h-full">
-          <SidebarNav />
-          <div className="flex min-h-full flex-1 flex-col">{children}</div>
-        </div>
+        <PrivacyProvider>
+          <div className="flex h-dvh overflow-hidden">
+            <SidebarNav />
+            <main className="flex min-w-0 flex-1 flex-col overflow-y-auto">
+              <LiveStatusBanner />
+              {children}
+            </main>
+          </div>
+        </PrivacyProvider>
       </body>
     </html>
   );

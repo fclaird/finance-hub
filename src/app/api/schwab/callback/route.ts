@@ -30,7 +30,15 @@ export async function GET(req: Request) {
   const token = await exchangeCodeForToken(code);
   setSchwabToken(getSecretsPassphrase(), { ...token, obtained_at: Date.now() });
 
-  // For now, bounce back to home. We'll add a proper Connections page next.
-  return NextResponse.redirect(new URL("/", url));
+  // Let middleware/home gate know we're connected (no secrets, best-effort).
+  jar.set("fh_schwab_connected", "1", {
+    httpOnly: false,
+    sameSite: "lax",
+    secure: process.env.NODE_ENV === "production",
+    path: "/",
+    maxAge: 30 * 24 * 3600,
+  });
+
+  return NextResponse.redirect(new URL("/allocation", url));
 }
 

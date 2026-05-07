@@ -10,6 +10,18 @@ function isExpired(token: SchwabToken) {
   return Date.now() >= expiresAt - REFRESH_SKEW_MS;
 }
 
+function joinBaseAndPath(base: string, path: string): URL {
+  const u = new URL(base);
+  const basePath = u.pathname.replace(/\/+$/, "");
+  const rel = path.replace(/^\/+/, "");
+  const qIdx = rel.indexOf("?");
+  const p = qIdx >= 0 ? rel.slice(0, qIdx) : rel;
+  const q = qIdx >= 0 ? rel.slice(qIdx) : "";
+  u.pathname = `${basePath}/${p}`;
+  u.search = q;
+  return u;
+}
+
 async function getValidToken(): Promise<SchwabToken> {
   const passphrase = getSecretsPassphrase();
   const token = getSchwabToken(passphrase);
@@ -27,7 +39,7 @@ export async function schwabFetch<T>(
   init?: RequestInit,
 ): Promise<T> {
   const token = await getValidToken();
-  const url = new URL(path, SCHWAB_TRADER_API_BASE);
+  const url = joinBaseAndPath(SCHWAB_TRADER_API_BASE, path);
   const resp = await fetch(url, {
     ...init,
     headers: {
@@ -38,14 +50,14 @@ export async function schwabFetch<T>(
   });
   if (!resp.ok) {
     const text = await resp.text().catch(() => "");
-    throw new Error(`Schwab API error: ${resp.status} ${resp.statusText} ${text}`);
+    throw new Error(`Schwab API error (${url.toString()}): ${resp.status} ${resp.statusText} ${text}`);
   }
   return (await resp.json()) as T;
 }
 
 export async function schwabMarketFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const token = await getValidToken();
-  const url = new URL(path, SCHWAB_MARKETDATA_API_BASE);
+  const url = joinBaseAndPath(SCHWAB_MARKETDATA_API_BASE, path);
   const resp = await fetch(url, {
     ...init,
     headers: {
@@ -56,7 +68,7 @@ export async function schwabMarketFetch<T>(path: string, init?: RequestInit): Pr
   });
   if (!resp.ok) {
     const text = await resp.text().catch(() => "");
-    throw new Error(`Schwab Market Data API error: ${resp.status} ${resp.statusText} ${text}`);
+    throw new Error(`Schwab Market Data API error (${url.toString()}): ${resp.status} ${resp.statusText} ${text}`);
   }
   return (await resp.json()) as T;
 }

@@ -11,7 +11,9 @@ export async function GET() {
   jar.set(STATE_COOKIE, state, {
     httpOnly: true,
     sameSite: "lax",
-    secure: true,
+    // In local dev, Next may run over http unless you opt into HTTPS.
+    // If `secure: true` on http, the browser will silently drop the cookie and OAuth will fail state validation.
+    secure: process.env.NODE_ENV === "production",
     path: "/",
     maxAge: 10 * 60,
   });
