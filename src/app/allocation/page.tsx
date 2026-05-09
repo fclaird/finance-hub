@@ -3,7 +3,9 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 
+import { AccountPositionsForAllocation } from "@/app/components/AccountPositionsForAllocation";
 import { FinancePiePanel } from "@/app/components/FinancePiePanel";
+import { useEquityMarketPolling } from "@/hooks/useEquityMarketPolling";
 import { usePrivacy } from "@/app/components/PrivacyProvider";
 import { formatUsd2 } from "@/lib/format";
 
@@ -285,20 +287,33 @@ export default function AllocationPage() {
 
   useEffect(() => {
     const t = setTimeout(() => {
-      void load().catch((e) => setError(e instanceof Error ? e.message : String(e)));
+      void (async () => {
+        await fetch("/api/schwab/quotes", { method: "POST" }).catch(() => null);
+        await fetch("/api/schwab/refresh-greeks", { method: "POST" }).catch(() => null);
+        await load().catch((e) => setError(e instanceof Error ? e.message : String(e)));
+      })();
     }, 0);
     return () => clearTimeout(t);
   }, []);
 
-  useEffect(() => {
-    const id = setInterval(() => {
+  useEquityMarketPolling(
+    () => {
       void (async () => {
         await fetch("/api/schwab/quotes", { method: "POST" });
+        const key = "fh_last_greeks_refresh_ms";
+        const now = Date.now();
+        const last = Number(sessionStorage.getItem(key) ?? "0");
+        const FIVE_MIN = 5 * 60_000;
+        if (!Number.isFinite(last) || now - last > FIVE_MIN) {
+          sessionStorage.setItem(key, String(now));
+          await fetch("/api/schwab/refresh-greeks", { method: "POST" }).catch(() => null);
+        }
         await load();
       })();
-    }, 60_000);
-    return () => clearInterval(id);
-  }, []);
+    },
+    60_000,
+    [],
+  );
 
   function toggleSort(col: SortColumn) {
     if (sortColumn === col) setSortAsc(!sortAsc);
@@ -343,6 +358,10 @@ export default function AllocationPage() {
     const b = exposureBuckets.find((x) => x.bucketKey === pieView);
     return b?.exposure ?? [];
   }, [rows, exposureBuckets, pieView]);
+
+  /** Whole-portfolio synthetic MV (for hint when Net vs Spot would match). */
+  const portfolioSynthMv = useMemo(() => rows.reduce((s, r) => s + r.syntheticMarketValue, 0), [rows]);
+  const showSyntheticZeroHint = rows.length > 0 && Math.abs(portfolioSynthMv) < 1e-6;
 
   /** Denominator for % + pie for active metric + scope. */
   const scopedMetricTotal = useMemo(() => scopedRows.reduce((s, r) => s + sliceMv(r, pieMetric), 0), [scopedRows, pieMetric]);
@@ -496,6 +515,16 @@ export default function AllocationPage() {
           </div>
         ) : null}
 
+        {showSyntheticZeroHint ? (
+          <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-950 dark:border-amber-900/40 dark:bg-amber-950/25 dark:text-amber-100">
+            Synthetic exposure is <span className="font-semibold">$0</span> because option deltas are not loaded yet (Net and Spot weights match). Open{" "}
+            <Link href="/connections" className="font-medium underline underline-offset-2">
+              Connections
+            </Link>{" "}
+            and use <span className="font-medium">Refresh option greeks</span>, or stay on this page — greeks refresh runs after quotes on load and at most every 5 minutes while the market is open.
+          </div>
+        ) : null}
+
         <div className="mt-5 overflow-x-auto">
           <table className="w-full border-collapse text-sm">
             <thead>
@@ -605,7 +634,9 @@ export default function AllocationPage() {
                     <td className="py-2 pr-4 text-right tabular-nums font-medium text-zinc-900 dark:text-zinc-100">
                         <span className={negClass(netMv)}>{usd2Masked(netMv, privacy.masked)}</span>
                     </td>
-                      <td className={"py-2 pr-4 text-right tabular-nums " + negClass(r.syntheticShares)}>{r.syntheticShares.toFixed(2)}</td>
+                      <td className={"py-2 pr-4 text-right tabular-nums " + negClass(r.syntheticShares)}>
+                        {(Number.isFinite(r.syntheticShares) ? r.syntheticShares : 0).toFixed(2)}
+                      </td>
                       <td className={"py-2 pr-4 text-right tabular-nums " + negClass(r.heldShares ?? 0)}>{(r.heldShares ?? 0).toFixed(2)}</td>
                       <td className={"py-2 pr-4 text-right tabular-nums " + negClass(netShares(r))}>{netShares(r).toFixed(2)}</td>
                     <td className="py-2 pr-4 text-right tabular-nums">{PCT2.format(pct * 100)}%</td>
@@ -618,7 +649,11 @@ export default function AllocationPage() {
                   <td className="py-2 pr-4 text-right tabular-nums">{usd2Masked(scopedRows.reduce((s, r) => s + r.spotMarketValue, 0), privacy.masked)}</td>
                   <td className="py-2 pr-4 text-right tabular-nums">{usd2Masked(scopedRows.reduce((s, r) => s + r.syntheticMarketValue, 0), privacy.masked)}</td>
                   <td className="py-2 pr-4 text-right tabular-nums">{usd2Masked(scopedRows.reduce((s, r) => s + r.spotMarketValue + r.syntheticMarketValue, 0), privacy.masked)}</td>
-                  <td className="py-2 pr-4 text-right tabular-nums">{scopedRows.reduce((s, r) => s + r.syntheticShares, 0).toFixed(2)}</td>
+                  <td className="py-2 pr-4 text-right tabular-nums">
+                    {scopedRows
+                      .reduce((s, r) => s + (Number.isFinite(r.syntheticShares) ? r.syntheticShares : 0), 0)
+                      .toFixed(2)}
+                  </td>
                   <td className="py-2 pr-4 text-right tabular-nums">{scopedRows.reduce((s, r) => s + (r.heldShares ?? 0), 0).toFixed(2)}</td>
                   <td className="py-2 pr-4 text-right tabular-nums">{scopedRows.reduce((s, r) => s + (r.heldShares ?? 0) + (r.syntheticShares ?? 0), 0).toFixed(2)}</td>
                   <td className="py-2 pr-4 text-right tabular-nums">100.00%</td>
@@ -645,6 +680,11 @@ export default function AllocationPage() {
         <div className="mt-3">
           <FinancePiePanel
             title={`${pieView === "net" ? "All accounts" : pieView === "retirement" ? "Retirement" : "Brokerage"} · ${pieMetricChartSubtitle(pieMetric)}`}
+            emptyMessage={
+              pieMetric === "synthetic" && Math.abs(scopedMetricTotal) < 1e-9
+                ? "No synthetic market value to chart (all slices ≤ $0). Refresh option greeks on Connections if you hold options — deltas must be loaded for synthetic MV."
+                : undefined
+            }
             buckets={[
               {
                 label: pieView,
@@ -736,6 +776,7 @@ export default function AllocationPage() {
               <div className="mt-3 overflow-x-auto">
                 <AccountAssetClassTable rows={a.byAssetClass} masked={privacy.masked} />
               </div>
+              <AccountPositionsForAllocation accountId={a.accountId} />
             </details>
           ))}
           {accounts.length === 0 ? (

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { getDb } from "@/lib/db";
+import { isPosterityAccountId, notPosterityWhereSql } from "@/lib/posterity";
 import { latestSnapshotId } from "@/lib/snapshots";
 
 type ParsedOption = {
@@ -47,36 +48,7 @@ function daysToExpiration(expirationIso: string, asOfIso: string): number | null
   return Math.max(0, Math.ceil((exp - asOf) / (24 * 3600 * 1000)));
 }
 
-export async function GET(req: Request) {
-  const url = new URL(req.url);
-  const snapshotId = url.searchParams.get("snapshotId");
-
-  const db = getDb();
-  const latest = latestSnapshotId(db);
-
-  // Default behavior: show the latest snapshot *per account* (Schwab sync writes one snapshot per account).
-  // If a specific snapshotId is provided, show that snapshot only.
-  const snaps =
-    snapshotId != null
-      ? [snapshotId]
-      : (db
-          .prepare(
-            `
-            SELECT hs.id AS snapshot_id
-            FROM holding_snapshots hs
-            JOIN accounts a ON a.id = hs.account_id
-            WHERE a.id LIKE 'schwab_%'
-              AND hs.as_of = (
-                SELECT MAX(hs2.as_of) FROM holding_snapshots hs2 WHERE hs2.account_id = a.id
-              )
-            ORDER BY a.name ASC
-          `,
-          )
-          .all() as Array<{ snapshot_id: string }>)
-          .map((r) => r.snapshot_id);
-
-  if (snaps.length === 0 && !latest) return NextResponse.json({ ok: true, snapshotId: null, positions: [] });
-
+function buildPositionsForSnapshots(db: ReturnType<typeof getDb>, snaps: string[]) {
   const today = new Date().toISOString().slice(0, 10);
   const pxRows = db
     .prepare(
@@ -140,7 +112,6 @@ export async function GET(req: Request) {
     theta: number | null;
   }>;
 
-  // Underlying prices (implied from spot positions in same snapshot): px = mv / qty
   const underRows = db
     .prepare(
       `
@@ -170,6 +141,8 @@ export async function GET(req: Request) {
         price != null && Number.isFinite(price) ? price * (r.quantity ?? 0) : r.marketValue;
       return {
         ...r,
+        symbol: r.symbol ?? "",
+        securityName: r.securityName ?? "",
         price,
         marketValue,
         optionExpiration: null,
@@ -199,6 +172,8 @@ export async function GET(req: Request) {
 
     return {
       ...r,
+      symbol: r.symbol ?? "",
+      securityName: r.securityName ?? "",
       optionExpiration: parsed?.expiration ?? null,
       optionRight: parsed?.right ?? null,
       optionStrike: parsed?.strike ?? null,
@@ -208,6 +183,76 @@ export async function GET(req: Request) {
     };
   });
 
-  return NextResponse.json({ ok: true, snapshotId: snapshotId ?? latest ?? null, snapshots: snaps, positions: out });
+  return out;
 }
 
+export async function GET(req: Request) {
+  const url = new URL(req.url);
+  const accountIdParam = url.searchParams.get("accountId");
+  const snapshotId = url.searchParams.get("snapshotId");
+
+  const db = getDb();
+  const latest = latestSnapshotId(db);
+
+  let snaps: string[] = [];
+  let responseSnapshotLabel: string | null = null;
+
+  if (accountIdParam) {
+    if (isPosterityAccountId(accountIdParam)) {
+      return NextResponse.json(
+        { ok: false, error: "Posterity accounts are not served by this route; use posterity APIs." },
+        { status: 400 },
+      );
+    }
+    const snap = db
+      .prepare(
+        `SELECT id FROM holding_snapshots WHERE account_id = ? ORDER BY as_of DESC LIMIT 1`,
+      )
+      .get(accountIdParam) as { id: string } | undefined;
+    snaps = snap ? [snap.id] : [];
+    responseSnapshotLabel = snap?.id ?? null;
+  } else if (snapshotId != null) {
+    snaps = [snapshotId];
+    responseSnapshotLabel = snapshotId;
+  } else {
+    snaps =
+      (db
+        .prepare(
+          `
+            SELECT hs.id AS snapshot_id
+            FROM holding_snapshots hs
+            JOIN accounts a ON a.id = hs.account_id
+            WHERE a.id LIKE 'schwab_%'
+              AND ${notPosterityWhereSql("a")}
+              AND hs.as_of = (
+                SELECT MAX(hs2.as_of) FROM holding_snapshots hs2 WHERE hs2.account_id = a.id
+              )
+            ORDER BY a.name ASC
+          `,
+        )
+        .all() as Array<{ snapshot_id: string }>).map((r) => r.snapshot_id);
+    responseSnapshotLabel = latest ?? null;
+  }
+
+  if (snaps.length === 0 && !latest && !accountIdParam) {
+    return NextResponse.json({ ok: true, snapshotId: null, positions: [] });
+  }
+
+  if (snaps.length === 0) {
+    return NextResponse.json({
+      ok: true,
+      snapshotId: responseSnapshotLabel,
+      snapshots: [],
+      positions: [],
+    });
+  }
+
+  const out = buildPositionsForSnapshots(db, snaps);
+
+  return NextResponse.json({
+    ok: true,
+    snapshotId: snapshotId ?? responseSnapshotLabel ?? latest ?? null,
+    snapshots: snaps,
+    positions: out,
+  });
+}

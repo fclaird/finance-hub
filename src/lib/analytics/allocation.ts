@@ -3,6 +3,7 @@ import { getUnderlyingExposureRollup } from "@/lib/analytics/optionsExposure";
 import { latestSnapshotId } from "@/lib/snapshots";
 import type { DataMode } from "@/lib/dataMode";
 import { bucketFromAccount } from "@/lib/accountBuckets";
+import { notPosterityWhereSql } from "@/lib/posterity";
 
 export type AllocationBucket = {
   key: string;
@@ -122,6 +123,7 @@ export function getAllocationByAccount(includeSynthetic: boolean, mode: DataMode
           @mode = 'auto'
           OR (@mode = 'schwab' AND a.id LIKE 'schwab_%')
         )
+        AND ${notPosterityWhereSql("a")}
       ORDER BY a.name ASC
     `,
     )

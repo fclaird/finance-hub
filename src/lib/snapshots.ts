@@ -1,6 +1,7 @@
 import type Database from "better-sqlite3";
 
 import { type DataMode } from "@/lib/dataMode";
+import { notPosterityWhereSql } from "@/lib/posterity";
 
 export function latestSnapshotId(db: Database.Database, mode?: DataMode): string | null {
   const m = mode ?? "auto";
@@ -14,6 +15,7 @@ export function latestSnapshotId(db: Database.Database, mode?: DataMode): string
             FROM holding_snapshots hs
             JOIN accounts a ON a.id = hs.account_id
             WHERE a.id LIKE 'schwab_%'
+              AND ${notPosterityWhereSql("a")}
             ORDER BY hs.as_of DESC
             LIMIT 1
           `,
@@ -26,6 +28,7 @@ export function latestSnapshotId(db: Database.Database, mode?: DataMode): string
             FROM holding_snapshots hs
             JOIN accounts a ON a.id = hs.account_id
             WHERE a.id NOT LIKE 'demo_%'
+              AND ${notPosterityWhereSql("a")}
             ORDER BY hs.as_of DESC
             LIMIT 1
           `,
@@ -43,6 +46,7 @@ export function snapshotAvailability(db: Database.Database): { hasSchwab: boolea
       FROM holding_snapshots hs
       JOIN accounts a ON a.id = hs.account_id
       WHERE a.id LIKE 'schwab_%'
+        AND ${notPosterityWhereSql("a")}
       LIMIT 1
     `,
     )

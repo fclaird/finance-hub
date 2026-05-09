@@ -44,6 +44,20 @@ function migrate(db: Database.Database) {
   if (hasAccounts) {
     ensureColumn(db, "accounts", "nickname", "nickname TEXT");
   }
+  const hasSecurities = db
+    .prepare(`SELECT 1 FROM sqlite_master WHERE type='table' AND name='securities' LIMIT 1`)
+    .get();
+  if (hasSecurities) {
+    ensureColumn(db, "securities", "option_type", "option_type TEXT");
+    ensureColumn(db, "securities", "expiration_date", "expiration_date TEXT");
+    ensureColumn(db, "securities", "strike_price", "strike_price REAL");
+  }
+  const hasTaxonomy = db
+    .prepare(`SELECT 1 FROM sqlite_master WHERE type='table' AND name='security_taxonomy' LIMIT 1`)
+    .get();
+  if (hasTaxonomy) {
+    ensureColumn(db, "security_taxonomy", "market_cap", "market_cap REAL");
+  }
   const hasEarningsMetrics = db
     .prepare(`SELECT 1 FROM sqlite_master WHERE type='table' AND name='earnings_opp_metrics' LIMIT 1`)
     .get();

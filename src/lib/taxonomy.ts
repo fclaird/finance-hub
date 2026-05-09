@@ -10,6 +10,7 @@ export type SecurityTaxonomy = {
   symbol: string;
   sector: string | null;
   industry: string | null;
+  marketCap: number | null;
   marketCapBucket: MarketCapBucket | null;
   revenueGeoBucket: RevenueGeoBucket | null;
   source: string | null;
@@ -32,7 +33,7 @@ export function getTaxonomy(symbol: string): SecurityTaxonomy | null {
   const row = db
     .prepare(
       `
-      SELECT symbol, sector, industry, market_cap_bucket, revenue_geo_bucket, source, updated_at
+      SELECT symbol, sector, industry, market_cap, market_cap_bucket, revenue_geo_bucket, source, updated_at
       FROM security_taxonomy
       WHERE symbol = ?
       LIMIT 1
@@ -43,6 +44,7 @@ export function getTaxonomy(symbol: string): SecurityTaxonomy | null {
         symbol: string;
         sector: string | null;
         industry: string | null;
+        market_cap: number | null;
         market_cap_bucket: string | null;
         revenue_geo_bucket: string | null;
         source: string | null;
@@ -55,6 +57,7 @@ export function getTaxonomy(symbol: string): SecurityTaxonomy | null {
     symbol: row.symbol,
     sector: row.sector,
     industry: row.industry,
+    marketCap: typeof row.market_cap === "number" && Number.isFinite(row.market_cap) && row.market_cap > 0 ? row.market_cap : null,
     marketCapBucket: (asBucket(row.market_cap_bucket, ["mega", "large", "mid", "small", "micro", "unknown"]) as MarketCapBucket | null) ?? null,
     revenueGeoBucket: (asBucket(row.revenue_geo_bucket, ["US", "Intl", "Mixed", "unknown"]) as RevenueGeoBucket | null) ?? null,
     source: row.source,
@@ -90,11 +93,12 @@ export async function syncTaxonomyFromSchwab(symbols: string[]): Promise<{ upser
 
   const db = getDb();
   const upsert = db.prepare(`
-    INSERT INTO security_taxonomy (symbol, sector, industry, market_cap_bucket, revenue_geo_bucket, source, updated_at)
-    VALUES (@symbol, @sector, @industry, @market_cap_bucket, @revenue_geo_bucket, 'schwab', datetime('now'))
+    INSERT INTO security_taxonomy (symbol, sector, industry, market_cap, market_cap_bucket, revenue_geo_bucket, source, updated_at)
+    VALUES (@symbol, @sector, @industry, @market_cap, @market_cap_bucket, @revenue_geo_bucket, 'schwab', datetime('now'))
     ON CONFLICT(symbol) DO UPDATE SET
       sector = excluded.sector,
       industry = excluded.industry,
+      market_cap = excluded.market_cap,
       market_cap_bucket = excluded.market_cap_bucket,
       revenue_geo_bucket = excluded.revenue_geo_bucket,
       source = excluded.source,
@@ -113,12 +117,19 @@ export async function syncTaxonomyFromSchwab(symbols: string[]): Promise<{ upser
     const fundamental = asObj(eObj.fundamental) ?? asObj(eObj.fundamentals) ?? eObj;
     const sector = typeof fundamental?.sector === "string" ? fundamental.sector : null;
     const industry = typeof fundamental?.industry === "string" ? fundamental.industry : null;
+    const marketCap =
+      (typeof fundamental?.marketCap === "number" && Number.isFinite(fundamental.marketCap) ? fundamental.marketCap : null) ??
+      (typeof fundamental?.marketCap === "string" && fundamental.marketCap.trim() !== "" && Number.isFinite(Number(fundamental.marketCap))
+        ? Number(fundamental.marketCap)
+        : null) ??
+      null;
     if (!sector && !industry) continue;
 
     upsert.run({
       symbol: sym,
       sector,
       industry,
+      market_cap: marketCap,
       market_cap_bucket: null,
       revenue_geo_bucket: null,
     });

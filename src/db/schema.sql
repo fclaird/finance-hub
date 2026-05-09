@@ -37,6 +37,9 @@ CREATE TABLE IF NOT EXISTS securities (
   cusip TEXT,
   isin TEXT,
   underlying_security_id TEXT REFERENCES securities(id),
+  option_type TEXT,
+  expiration_date TEXT,
+  strike_price REAL,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -75,6 +78,7 @@ CREATE TABLE IF NOT EXISTS security_taxonomy (
   symbol TEXT PRIMARY KEY,
   sector TEXT,
   industry TEXT,
+  market_cap REAL, -- numeric market cap when available
   market_cap_bucket TEXT, -- 'mega' | 'large' | 'mid' | 'small' | 'micro' | 'unknown'
   revenue_geo_bucket TEXT, -- 'US' | 'Intl' | 'Mixed' | 'unknown'
   source TEXT, -- 'schwab' | 'manual' | etc.
@@ -120,6 +124,36 @@ CREATE TABLE IF NOT EXISTS price_points (
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   PRIMARY KEY (provider, symbol, date)
 );
+
+-- Account equity/value time series (best-available).
+-- For Schwab this is populated from point-in-time account balances on each sync.
+CREATE TABLE IF NOT EXISTS account_value_points (
+  account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  as_of TEXT NOT NULL, -- ISO datetime
+  equity_value REAL NOT NULL, -- account equity / liquidation value proxy
+  cash_value REAL, -- if available
+  source TEXT NOT NULL, -- 'schwab_balances' | 'manual' | etc.
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (account_id, as_of)
+);
+
+-- Cached OHLCV candles for terminal visualizations + volume anomaly detection.
+-- interval: '1d' | '5m' etc. ts_ms: candle start time in epoch ms.
+CREATE TABLE IF NOT EXISTS ohlcv_points (
+  provider TEXT NOT NULL, -- 'schwab'
+  symbol TEXT NOT NULL,
+  interval TEXT NOT NULL,
+  ts_ms INTEGER NOT NULL,
+  open REAL,
+  high REAL,
+  low REAL,
+  close REAL,
+  volume REAL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (provider, symbol, interval, ts_ms)
+);
+
+CREATE INDEX IF NOT EXISTS idx_ohlcv_points_symbol_interval_ts ON ohlcv_points(symbol, interval, ts_ms);
 
 -- Cashflows (dividends, interest, etc.)
 CREATE TABLE IF NOT EXISTS cashflows (

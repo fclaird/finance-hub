@@ -6,6 +6,7 @@ import { useEffect, useMemo, useState } from "react";
 import { usePrivacy } from "@/app/components/PrivacyProvider";
 
 const NAV = [
+  { href: "/terminal", label: "Terminal" },
   { href: "/positions", label: "Positions" },
   { href: "/allocation", label: "Allocation" },
   { href: "/diversification", label: "Diversification" },
@@ -14,6 +15,7 @@ const NAV = [
   { href: "/dividends", label: "Dividends" },
   { href: "/rebalancing", label: "Rebalancing" },
   { href: "/alerts", label: "Alerts" },
+  { href: "/posterity", label: "Posterity" },
 ];
 
 type DataMode = "auto" | "schwab";

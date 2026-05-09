@@ -1,6 +1,7 @@
 import { getDb } from "@/lib/db";
 import type { DataMode } from "@/lib/dataMode";
 import { bucketFromAccount } from "@/lib/accountBuckets";
+import { notPosterityWhereSql } from "@/lib/posterity";
 
 export type ExposureRow = {
   underlyingSymbol: string;
@@ -48,7 +49,7 @@ export function getUnderlyingExposureByBucket(mode: DataMode = "auto"): BucketEx
   const db = getDb();
   const where =
     mode === "schwab"
-      ? "a.id LIKE 'schwab_%'"
+      ? `a.id LIKE 'schwab_%' AND ${notPosterityWhereSql("a")}`
       : "1=1";
 
   const snapshots = db

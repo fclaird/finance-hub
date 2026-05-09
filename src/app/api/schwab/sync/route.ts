@@ -55,6 +55,24 @@ function pickCashUsd(cb: Record<string, unknown> | undefined): number | null {
   return null;
 }
 
+function pickEquityUsd(cb: Record<string, unknown> | undefined): number | null {
+  if (!cb) return null;
+  const keys = [
+    "liquidationValue",
+    "netLiquidation",
+    "equity",
+    "equityValue",
+    "accountValue",
+    "totalAccountValue",
+    "totalValue",
+  ];
+  for (const k of keys) {
+    const n = asNumber(cb[k]);
+    if (n != null) return n;
+  }
+  return null;
+}
+
 export async function POST() {
   try {
     const db = getDb();
@@ -128,6 +146,14 @@ export async function POST() {
     VALUES (@id, @snapshot_id, @security_id, @quantity, @price, @market_value, @metadata_json)
   `);
 
+  const upsertAccountValuePoint = db.prepare(`
+    INSERT INTO account_value_points (account_id, as_of, equity_value, cash_value, source)
+    VALUES (@account_id, @as_of, @equity_value, @cash_value, 'schwab_balances')
+    ON CONFLICT(account_id, as_of) DO UPDATE SET
+      equity_value = excluded.equity_value,
+      cash_value = excluded.cash_value
+  `);
+
     const tx = db.transaction(() => {
     // Ensure one CASH security exists.
     insertSecurity.run({
@@ -161,6 +187,8 @@ export async function POST() {
 
       // Cash row (so each account always shows).
       const cashUsd = pickCashUsd(sa.currentBalances);
+      let computedPositionsMv = 0;
+      let hasAnyPosMv = false;
       if (cashUsd != null && Number.isFinite(cashUsd) && cashUsd !== 0) {
         insertPosition.run({
           id: newId("pos"),
@@ -203,6 +231,10 @@ export async function POST() {
         });
 
         const qty = (p.longQuantity ?? 0) - (p.shortQuantity ?? 0);
+        if (p.marketValue != null && Number.isFinite(p.marketValue)) {
+          computedPositionsMv += p.marketValue;
+          hasAnyPosMv = true;
+        }
         insertPosition.run({
           id: newId("pos"),
           snapshot_id: snapshotId,
@@ -211,6 +243,19 @@ export async function POST() {
           price: p.averagePrice ?? null,
           market_value: p.marketValue ?? null,
           metadata_json: JSON.stringify(p),
+        });
+      }
+
+      const equityFromBalances = pickEquityUsd(sa.currentBalances);
+      const equityValue =
+        equityFromBalances ??
+        ((cashUsd ?? 0) + (hasAnyPosMv ? computedPositionsMv : 0));
+      if (Number.isFinite(equityValue)) {
+        upsertAccountValuePoint.run({
+          account_id: accountId,
+          as_of: nowIso,
+          equity_value: equityValue,
+          cash_value: cashUsd,
         });
       }
     }

@@ -3,10 +3,12 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import {
+  Area,
   CartesianGrid,
   Line,
   LineChart,
   ResponsiveContainer,
+  ReferenceLine,
   Tooltip,
   XAxis,
   YAxis,
@@ -14,6 +16,7 @@ import {
 
 type Point = { asOf: string; totalMarketValue: number };
 type BenchPoint = { date: string; close: number };
+type TodayPayload = { ok: boolean; portfolioPct: number | null; SPY: number | null; QQQ: number | null };
 
 export default function PerformancePage() {
   const [series, setSeries] = useState<Point[]>([]);
@@ -21,6 +24,7 @@ export default function PerformancePage() {
   const [windowKey, setWindowKey] = useState<"1D" | "1W" | "1M" | "3M" | "6M" | "1Y" | "3Y" | "5Y">("6M");
   const [nowMs, setNowMs] = useState(() => Date.now());
   const [bench, setBench] = useState<Record<string, BenchPoint[]>>({});
+  const [today, setToday] = useState<TodayPayload | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -61,6 +65,16 @@ export default function PerformancePage() {
       } catch {
         setBench({});
       }
+
+      // Today % (live)
+      try {
+        const tResp = await fetch("/api/performance/today", { cache: "no-store" });
+        const tJson = (await safeJson(tResp)) as TodayPayload;
+        if (tJson.ok) setToday(tJson);
+        else setToday(null);
+      } catch {
+        setToday(null);
+      }
     })().catch((e) => setError(e instanceof Error ? e.message : String(e)));
   }, [bucket]);
 
@@ -85,6 +99,39 @@ export default function PerformancePage() {
   }, [windowKey, nowMs]);
 
   const chartData = useMemo(() => {
+    if (windowKey === "1D") {
+      const p = today?.portfolioPct ?? null;
+      const spy = today?.SPY ?? null;
+      const qqq = today?.QQQ ?? null;
+      return [
+        {
+          asOf: "start",
+          asOfLabel: "Start",
+          portfolio: 0,
+          portfolioPos: 0,
+          portfolioNeg: 0,
+          SPY: 0,
+          SPYPos: 0,
+          SPYNeg: 0,
+          QQQ: 0,
+          QQQPos: 0,
+          QQQNeg: 0,
+        },
+        {
+          asOf: "now",
+          asOfLabel: "Now",
+          portfolio: p ?? 0,
+          portfolioPos: Math.max(0, p ?? 0),
+          portfolioNeg: Math.min(0, p ?? 0),
+          SPY: spy ?? 0,
+          SPYPos: Math.max(0, spy ?? 0),
+          SPYNeg: Math.min(0, spy ?? 0),
+          QQQ: qqq ?? 0,
+          QQQPos: Math.max(0, qqq ?? 0),
+          QQQNeg: Math.min(0, qqq ?? 0),
+        },
+      ];
+    }
     if (series.length === 0) return [];
     const filtered = series.filter((p) => new Date(p.asOf).getTime() >= windowStartMs);
     if (filtered.length === 0) return [];
@@ -143,15 +190,24 @@ export default function PerformancePage() {
 
     return filtered.map((p) => {
       const isoDate = new Date(p.asOf).toISOString().slice(0, 10);
+      const portfolio = ((p.totalMarketValue / start) - 1) * 100;
+      const spy = getBenchPct("SPY", isoDate);
+      const qqq = getBenchPct("QQQ", isoDate);
       return {
         asOf: p.asOf,
         asOfLabel: new Date(p.asOf).toLocaleDateString(),
-        portfolio: ((p.totalMarketValue / start) - 1) * 100,
-        SPY: getBenchPct("SPY", isoDate),
-        QQQ: getBenchPct("QQQ", isoDate),
+        portfolio,
+        portfolioPos: Math.max(0, portfolio),
+        portfolioNeg: Math.min(0, portfolio),
+        SPY: spy,
+        SPYPos: spy == null ? null : Math.max(0, spy),
+        SPYNeg: spy == null ? null : Math.min(0, spy),
+        QQQ: qqq,
+        QQQPos: qqq == null ? null : Math.max(0, qqq),
+        QQQNeg: qqq == null ? null : Math.min(0, qqq),
       };
     });
-  }, [series, bench, windowStartMs]);
+  }, [series, bench, windowStartMs, windowKey, today]);
 
   const COLORS = {
     portfolio: "#0f766e",
@@ -165,7 +221,7 @@ export default function PerformancePage() {
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Performance</h1>
           <p className="mt-2 text-sm leading-6 text-zinc-600 dark:text-zinc-400">
-            Time series is built from holdings snapshots created on each sync.
+            Time series is built from holdings snapshots created on each sync (and account balance points when available).
           </p>
         </div>
         <div className="flex items-center gap-3">
@@ -257,9 +313,64 @@ export default function PerformancePage() {
                 <CartesianGrid strokeDasharray="3 3" />
                 <XAxis dataKey="asOfLabel" tick={false} />
                 <YAxis tickFormatter={(v) => `${Number(v).toFixed(0)}%`} />
+                <ReferenceLine y={0} stroke="rgba(113,113,122,0.6)" />
                 <Tooltip
                   formatter={(v) => `${Number(v).toFixed(2)}%`}
                   labelFormatter={(l) => String(l)}
+                />
+                <Area
+                  type="monotone"
+                  dataKey="portfolioPos"
+                  name="Portfolio (above)"
+                  stroke="none"
+                  fill="rgba(16,185,129,0.18)"
+                  baseValue={0}
+                  isAnimationActive={false}
+                />
+                <Area
+                  type="monotone"
+                  dataKey="portfolioNeg"
+                  name="Portfolio (below)"
+                  stroke="none"
+                  fill="rgba(239,68,68,0.18)"
+                  baseValue={0}
+                  isAnimationActive={false}
+                />
+                <Area
+                  type="monotone"
+                  dataKey="SPYPos"
+                  name="SPY (above)"
+                  stroke="none"
+                  fill="rgba(16,185,129,0.10)"
+                  baseValue={0}
+                  isAnimationActive={false}
+                />
+                <Area
+                  type="monotone"
+                  dataKey="SPYNeg"
+                  name="SPY (below)"
+                  stroke="none"
+                  fill="rgba(239,68,68,0.10)"
+                  baseValue={0}
+                  isAnimationActive={false}
+                />
+                <Area
+                  type="monotone"
+                  dataKey="QQQPos"
+                  name="QQQ (above)"
+                  stroke="none"
+                  fill="rgba(16,185,129,0.10)"
+                  baseValue={0}
+                  isAnimationActive={false}
+                />
+                <Area
+                  type="monotone"
+                  dataKey="QQQNeg"
+                  name="QQQ (below)"
+                  stroke="none"
+                  fill="rgba(239,68,68,0.10)"
+                  baseValue={0}
+                  isAnimationActive={false}
                 />
                 <Line type="monotone" dataKey="portfolio" name="Portfolio" strokeWidth={2} dot={false} stroke={COLORS.portfolio} />
                 <Line type="monotone" dataKey="SPY" name="SPY" strokeWidth={2} dot={false} stroke={COLORS.SPY} />

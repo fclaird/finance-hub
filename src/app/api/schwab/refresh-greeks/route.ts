@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 
 import { getDb } from "@/lib/db";
 import { newId } from "@/lib/id";
-import { latestSnapshotId } from "@/lib/snapshots";
+import { carryForwardGreeksFromPriorSnapshots, getLatestSchwabSnapshotIds } from "@/lib/schwab/greeksCarryForward";
 import { schwabMarketFetch } from "@/lib/schwab/client";
 
 type QuotePayload = Record<string, unknown>;
@@ -14,7 +14,6 @@ function asNumber(v: unknown): number | null {
 }
 
 function pickGreek(quote: Record<string, unknown>, key: string): number | null {
-  // Try a few variants
   return (
     asNumber(quote[key]) ??
     asNumber(quote[key.toLowerCase()]) ??
@@ -34,30 +33,14 @@ function extractQuoteObject(entry: unknown): Record<string, unknown> | null {
 export async function POST() {
   const db = getDb();
 
-  const latest = latestSnapshotId(db, "schwab") ?? latestSnapshotId(db);
-
-  // Match Positions API behavior: latest snapshot per Schwab account.
-  const snaps = (db
-    .prepare(
-      `
-      SELECT hs.id AS snapshot_id
-      FROM holding_snapshots hs
-      JOIN accounts a ON a.id = hs.account_id
-      WHERE a.id LIKE 'schwab_%'
-        AND hs.as_of = (
-          SELECT MAX(hs2.as_of) FROM holding_snapshots hs2 WHERE hs2.account_id = a.id
-        )
-      ORDER BY a.name ASC
-    `,
-    )
-    .all() as Array<{ snapshot_id: string }>)
-    .map((r) => r.snapshot_id);
-
-  const snapshotIds = snaps.length ? snaps : latest ? [latest] : [];
+  const snapshotIds = getLatestSchwabSnapshotIds(db);
 
   if (snapshotIds.length === 0) {
     return NextResponse.json({ ok: false, error: "No holdings snapshots yet. Run sync first." }, { status: 400 });
   }
+
+  const snapshotsJson = JSON.stringify(snapshotIds);
+  const carryForwardApplied = carryForwardGreeksFromPriorSnapshots(db, snapshotIds);
 
   const optionPositions = db
     .prepare(
@@ -70,27 +53,37 @@ export async function POST() {
         AND s.security_type = 'option'
     `,
     )
-    .all({ snapshots_json: JSON.stringify(snapshotIds) }) as Array<{ position_id: string; symbol: string }>;
+    .all({ snapshots_json: snapshotsJson }) as Array<{ position_id: string; symbol: string }>;
 
   const symbols = Array.from(new Set(optionPositions.map((p) => p.symbol).filter(Boolean)));
   if (symbols.length === 0) {
-    return NextResponse.json({ ok: true, updated: 0, message: "No option positions found in latest snapshot." });
+    return NextResponse.json({
+      ok: true,
+      carryForwardApplied,
+      updated: 0,
+      message: "No option positions found in latest snapshot.",
+    });
   }
 
-  // Schwab quotes endpoint supports multiple symbols. Use a conservative batch size.
   const BATCH = 50;
   const updated: Array<{ symbol: string; delta: number | null }> = [];
 
+  /** Keep prior Greeks when quotes omit them (e.g. market closed); only overwrite when Schwab returns a number. */
   const upsertGreek = db.prepare(`
     INSERT INTO option_greeks (id, position_id, delta, gamma, theta, vega, iv, updated_at)
     VALUES (@id, @position_id, @delta, @gamma, @theta, @vega, @iv, datetime('now'))
     ON CONFLICT(position_id) DO UPDATE SET
-      delta = excluded.delta,
-      gamma = excluded.gamma,
-      theta = excluded.theta,
-      vega = excluded.vega,
-      iv = excluded.iv,
-      updated_at = excluded.updated_at
+      delta = COALESCE(excluded.delta, option_greeks.delta),
+      gamma = COALESCE(excluded.gamma, option_greeks.gamma),
+      theta = COALESCE(excluded.theta, option_greeks.theta),
+      vega = COALESCE(excluded.vega, option_greeks.vega),
+      iv = COALESCE(excluded.iv, option_greeks.iv),
+      updated_at = CASE
+        WHEN excluded.delta IS NOT NULL OR excluded.gamma IS NOT NULL OR excluded.theta IS NOT NULL
+          OR excluded.vega IS NOT NULL OR excluded.iv IS NOT NULL
+        THEN excluded.updated_at
+        ELSE option_greeks.updated_at
+      END
   `);
 
   const posBySymbol = new Map<string, string[]>();
@@ -131,6 +124,10 @@ export async function POST() {
     }
   }
 
-  return NextResponse.json({ ok: true, updated: updated.length, sample: updated.slice(0, 10) });
+  return NextResponse.json({
+    ok: true,
+    carryForwardApplied,
+    updated: updated.length,
+    sample: updated.slice(0, 10),
+  });
 }
-

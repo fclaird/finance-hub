@@ -3,6 +3,7 @@ import { cookies } from "next/headers";
 
 import { getDb } from "@/lib/db";
 import { DATA_MODE_COOKIE, parseDataMode } from "@/lib/dataMode";
+import { notPosterityWhereSql } from "@/lib/posterity";
 
 function normSym(s: string) {
   return (s ?? "").trim().toUpperCase();
@@ -17,7 +18,10 @@ export async function GET(req: Request) {
   const mode = parseDataMode(jar.get(DATA_MODE_COOKIE)?.value);
 
   const db = getDb();
-  const where = mode === "schwab" ? "a.id LIKE 'schwab_%'" : "a.id NOT LIKE 'demo_%'";
+  const where =
+    mode === "schwab"
+      ? `a.id LIKE 'schwab_%' AND ${notPosterityWhereSql("a")}`
+      : `a.id NOT LIKE 'demo_%' AND ${notPosterityWhereSql("a")}`;
 
   const snaps = db
     .prepare(

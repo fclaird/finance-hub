@@ -1,7 +1,20 @@
 const USD2 = new Intl.NumberFormat(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const INT0 = new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 });
 
 export function maskUsd(): string {
   return "XXXXX";
+}
+
+export function formatInt(n: number | null | undefined): string {
+  const v = typeof n === "number" ? n : n == null ? null : Number(n);
+  if (v == null || !Number.isFinite(v)) return "-";
+  return INT0.format(v);
+}
+
+export function formatNum(n: number | null | undefined, digits: number): string {
+  const v = typeof n === "number" ? n : n == null ? null : Number(n);
+  if (v == null || !Number.isFinite(v)) return "-";
+  return new Intl.NumberFormat(undefined, { minimumFractionDigits: digits, maximumFractionDigits: digits }).format(v);
 }
 
 export function formatUsd2(v: number | null | undefined, opts?: { mask?: boolean }): string {

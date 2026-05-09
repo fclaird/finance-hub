@@ -7,6 +7,7 @@ function normSym(s: string) {
 }
 
 export async function GET(req: Request) {
+  try {
   const url = new URL(req.url);
   const raw = url.searchParams.get("symbols") ?? "";
   const symbols = Array.from(new Set(raw.split(",").map(normSym).filter(Boolean)));
@@ -16,7 +17,7 @@ export async function GET(req: Request) {
   const rows = db
     .prepare(
       `
-      SELECT symbol, sector, industry, market_cap_bucket, revenue_geo_bucket, source, updated_at
+      SELECT symbol, sector, industry, market_cap, market_cap_bucket, revenue_geo_bucket, source, updated_at
       FROM security_taxonomy
       WHERE symbol IN (${symbols.map(() => "?").join(",")})
     `,
@@ -25,6 +26,7 @@ export async function GET(req: Request) {
     symbol: string;
     sector: string | null;
     industry: string | null;
+    market_cap: number | null;
     market_cap_bucket: string | null;
     revenue_geo_bucket: string | null;
     source: string | null;
@@ -36,6 +38,7 @@ export async function GET(req: Request) {
     out[r.symbol] = {
       sector: r.sector,
       industry: r.industry,
+      marketCap: r.market_cap,
       marketCapBucket: r.market_cap_bucket,
       revenueGeoBucket: r.revenue_geo_bucket,
       source: r.source,
@@ -44,5 +47,9 @@ export async function GET(req: Request) {
   }
 
   return NextResponse.json({ ok: true, taxonomy: out });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return NextResponse.json({ ok: false, error: msg, taxonomy: {} }, { status: 500 });
+  }
 }
 
