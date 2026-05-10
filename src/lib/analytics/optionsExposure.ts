@@ -1,7 +1,59 @@
 import { getDb } from "@/lib/db";
 import type { DataMode } from "@/lib/dataMode";
 import { bucketFromAccount } from "@/lib/accountBuckets";
+import { normalizeOptionUnderlying } from "@/lib/options/optionUnderlying";
 import { notPosterityWhereSql } from "@/lib/posterity";
+
+/**
+ * Portfolio-wide implied equity price for an underlying (non-option positions only),
+ * matching `/api/exposure/details`: SUM(mv)/SUM(qty) across all latest snapshots in `mode`.
+ */
+export function portfolioImpliedEquityPrice(
+  db: ReturnType<typeof getDb>,
+  mode: DataMode,
+  underlying: string,
+): number | null {
+  const sym = (underlying ?? "").trim().toUpperCase();
+  if (!sym || sym === "CASH") return null;
+
+  const where =
+    mode === "schwab"
+      ? `a.id LIKE 'schwab_%' AND ${notPosterityWhereSql("a")}`
+      : `a.id NOT LIKE 'demo_%' AND ${notPosterityWhereSql("a")}`;
+
+  const snaps = db
+    .prepare(
+      `
+      SELECT hs.id AS snapshot_id
+      FROM accounts a
+      JOIN holding_snapshots hs ON hs.account_id = a.id
+      WHERE ${where}
+        AND hs.as_of = (
+          SELECT MAX(hs2.as_of) FROM holding_snapshots hs2 WHERE hs2.account_id = a.id
+        )
+    `,
+    )
+    .all() as Array<{ snapshot_id: string }>;
+  const snapshotIds = snaps.map((r) => r.snapshot_id);
+  if (snapshotIds.length === 0) return null;
+
+  const spot = db
+    .prepare(
+      `
+      SELECT SUM(p.quantity) AS qty, SUM(COALESCE(p.market_value, 0)) AS mv
+      FROM positions p
+      JOIN securities s ON s.id = p.security_id
+      WHERE p.snapshot_id IN (SELECT value FROM json_each(@snaps))
+        AND s.security_type != 'option'
+        AND UPPER(COALESCE(s.symbol, '')) = @sym
+    `,
+    )
+    .get({ snaps: JSON.stringify(snapshotIds), sym }) as { qty: number | null; mv: number | null } | undefined;
+
+  const qty = spot?.qty ?? 0;
+  const mv = spot?.mv ?? 0;
+  return qty ? mv / qty : null;
+}
 
 export type ExposureRow = {
   underlyingSymbol: string;
@@ -17,6 +69,85 @@ export type BucketExposure = {
 };
 
 const DEFAULT_CONTRACT_MULTIPLIER = 100;
+
+export function impliedPriceMapForSnapshot(db: ReturnType<typeof getDb>, snapshotId: string): Map<string, number> {
+  const spot = db
+    .prepare(
+      `
+        SELECT
+          COALESCE(sec.symbol, 'UNKNOWN') AS symbol,
+          SUM(COALESCE(p.market_value, 0)) AS mv,
+          SUM(COALESCE(p.quantity, 0)) AS qty
+        FROM positions p
+        JOIN securities sec ON sec.id = p.security_id
+        WHERE p.snapshot_id = ?
+          AND sec.security_type != 'option'
+          AND sec.security_type != 'cash'
+        GROUP BY COALESCE(sec.symbol, 'UNKNOWN')
+      `,
+    )
+    .all(snapshotId) as Array<{ symbol: string; mv: number; qty: number }>;
+
+  const implied = new Map<string, number>();
+  for (const r of spot) {
+    const symKey = (r.symbol ?? "").trim().toUpperCase();
+    if (!symKey || symKey === "CASH") continue;
+    const qtyRow = db
+      .prepare(
+        `
+          SELECT SUM(quantity) AS qty, SUM(COALESCE(market_value, 0)) AS mv
+          FROM positions p
+          JOIN securities sec ON sec.id = p.security_id
+          WHERE p.snapshot_id = ?
+            AND sec.symbol = ?
+            AND sec.security_type != 'option'
+        `,
+      )
+      .get(snapshotId, r.symbol) as { qty: number | null; mv: number | null } | undefined;
+    const qty = qtyRow?.qty ?? 0;
+    const mv = qtyRow?.mv ?? r.mv ?? 0;
+    if (qty) implied.set(symKey, mv / qty);
+  }
+  return implied;
+}
+
+/** Total delta-weighted option exposure as equity MV for one account snapshot (uses portfolio-wide implied px per underlying). */
+export function syntheticEquityMvForSnapshot(
+  db: ReturnType<typeof getDb>,
+  snapshotId: string,
+  mode: DataMode = "auto",
+): number {
+  const rows = db
+    .prepare(
+      `
+        SELECT
+          us.symbol AS us_symbol,
+          sec.symbol AS option_symbol,
+          p.quantity * ? * COALESCE(og.delta, 0) AS synthetic_shares
+        FROM positions p
+        JOIN securities sec ON sec.id = p.security_id
+        LEFT JOIN securities us ON us.id = sec.underlying_security_id
+        LEFT JOIN option_greeks og ON og.position_id = p.id
+        WHERE p.snapshot_id = ?
+          AND sec.security_type = 'option'
+      `,
+    )
+    .all(DEFAULT_CONTRACT_MULTIPLIER, snapshotId) as Array<{
+    us_symbol: string | null;
+    option_symbol: string | null;
+    synthetic_shares: number;
+  }>;
+
+  let sum = 0;
+  for (const row of rows) {
+    const key = normalizeOptionUnderlying(row.us_symbol, row.option_symbol);
+    if (key === "CASH") continue;
+    const sh = row.synthetic_shares ?? 0;
+    const px = portfolioImpliedEquityPrice(db, mode, key);
+    sum += sh * (px ?? 0);
+  }
+  return sum;
+}
 
 export function getUnderlyingExposureRollup(mode: DataMode = "auto"): ExposureRow[] {
   // Reuse the bucketed exposure implementation and merge buckets back into a combined rollup.
@@ -73,7 +204,6 @@ export function getUnderlyingExposureByBucket(mode: DataMode = "auto"): BucketEx
     if (!byBucket.has(bucket)) byBucket.set(bucket, new Map());
     const map = byBucket.get(bucket)!;
 
-    // spot mv and shares by symbol for this snapshot
     const spot = db
       .prepare(
         `
@@ -91,53 +221,32 @@ export function getUnderlyingExposureByBucket(mode: DataMode = "auto"): BucketEx
       )
       .all(s.snapshot_id) as Array<{ symbol: string; mv: number; qty: number }>;
 
-    // synthetic shares by underlying symbol for this snapshot
-    const synthetic = db
+    const syntheticRows = db
       .prepare(
         `
         SELECT
-          COALESCE(us.symbol, sec.symbol, 'UNKNOWN') AS underlying_symbol,
-          SUM(p.quantity * ? * COALESCE(og.delta, 0)) AS synthetic_shares
+          us.symbol AS us_symbol,
+          sec.symbol AS option_symbol,
+          p.quantity * ? * COALESCE(og.delta, 0) AS synthetic_shares
         FROM positions p
         JOIN securities sec ON sec.id = p.security_id
         LEFT JOIN securities us ON us.id = sec.underlying_security_id
         LEFT JOIN option_greeks og ON og.position_id = p.id
         WHERE p.snapshot_id = ?
           AND sec.security_type = 'option'
-        GROUP BY COALESCE(us.symbol, sec.symbol, 'UNKNOWN')
       `,
       )
       .all(DEFAULT_CONTRACT_MULTIPLIER, s.snapshot_id) as Array<{
-      underlying_symbol: string;
+      us_symbol: string | null;
+      option_symbol: string | null;
       synthetic_shares: number;
     }>;
 
-    // implied price for each symbol in this snapshot
-    const implied = new Map<string, number>();
     for (const r of spot) {
-      if ((r.symbol ?? "").trim().toUpperCase() === "CASH") continue;
-      const qtyRow = db
-        .prepare(
-          `
-          SELECT SUM(quantity) AS qty, SUM(COALESCE(market_value, 0)) AS mv
-          FROM positions p
-          JOIN securities sec ON sec.id = p.security_id
-          WHERE p.snapshot_id = ?
-            AND sec.symbol = ?
-            AND sec.security_type != 'option'
-        `,
-        )
-        .get(s.snapshot_id, r.symbol) as { qty: number | null; mv: number | null } | undefined;
-      const qty = qtyRow?.qty ?? 0;
-      const mv = qtyRow?.mv ?? r.mv ?? 0;
-      if (qty) implied.set(r.symbol, mv / qty);
-    }
-
-    // merge into bucket map
-    for (const r of spot) {
-      if ((r.symbol ?? "").trim().toUpperCase() === "CASH") continue;
-      const prev = map.get(r.symbol) ?? {
-        underlyingSymbol: r.symbol,
+      const symKey = (r.symbol ?? "").trim().toUpperCase();
+      if (symKey === "CASH") continue;
+      const prev = map.get(symKey) ?? {
+        underlyingSymbol: symKey,
         spotMarketValue: 0,
         heldShares: 0,
         syntheticMarketValue: 0,
@@ -145,12 +254,12 @@ export function getUnderlyingExposureByBucket(mode: DataMode = "auto"): BucketEx
       };
       prev.spotMarketValue += r.mv;
       prev.heldShares += r.qty ?? 0;
-      map.set(r.symbol, prev);
+      map.set(symKey, prev);
     }
 
-    for (const syn of synthetic) {
-      const sym = syn.underlying_symbol;
-      if ((sym ?? "").trim().toUpperCase() === "CASH") continue;
+    for (const row of syntheticRows) {
+      const sym = normalizeOptionUnderlying(row.us_symbol, row.option_symbol);
+      if (sym === "CASH") continue;
       const prev = map.get(sym) ?? {
         underlyingSymbol: sym,
         spotMarketValue: 0,
@@ -158,10 +267,16 @@ export function getUnderlyingExposureByBucket(mode: DataMode = "auto"): BucketEx
         syntheticMarketValue: 0,
         syntheticShares: 0,
       };
-      prev.syntheticShares += syn.synthetic_shares;
-      const px = implied.get(sym) ?? 0;
-      prev.syntheticMarketValue += syn.synthetic_shares * px;
+      const sh = row.synthetic_shares ?? 0;
+      prev.syntheticShares += sh;
       map.set(sym, prev);
+    }
+  }
+
+  for (const m of byBucket.values()) {
+    for (const row of m.values()) {
+      const px = portfolioImpliedEquityPrice(db, mode, row.underlyingSymbol);
+      row.syntheticMarketValue = row.syntheticShares * (px ?? 0);
     }
   }
 
@@ -176,4 +291,3 @@ export function getUnderlyingExposureByBucket(mode: DataMode = "auto"): BucketEx
   out.sort((a, b) => (a.bucketKey === "retirement" ? -1 : 1) - (b.bucketKey === "retirement" ? -1 : 1));
   return out;
 }
-

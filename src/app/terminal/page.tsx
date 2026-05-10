@@ -9,6 +9,9 @@ import { usePrivacy } from "@/app/components/PrivacyProvider";
 import { useEquityMarketPolling } from "@/hooks/useEquityMarketPolling";
 import { isUsEquityPreOpenFuturesPollWindow, isUsEquityRegularSessionOpen } from "@/lib/market/usEquitySession";
 import { HeatmapGrid, type HeatmapItem } from "@/app/components/HeatmapGrid";
+import { XDataAgeBanner } from "@/app/components/terminal/XDataAgeBanner";
+import { XNewsSection } from "@/app/components/terminal/XNewsSection";
+import type { XDigestPayload } from "@/lib/x/types";
 import { formatUsd2 } from "@/lib/format";
 import { posNegClass, priceDirClass } from "@/lib/terminal/colors";
 
@@ -39,7 +42,16 @@ type MoversPayload = {
   error?: string;
 };
 
-type SortCol = "symbol" | "last" | "chgPct" | "chg" | "volume" | "volX";
+type OptionFlowPayload = {
+  ok: boolean;
+  source?: string;
+  hint?: string;
+  detail?: string;
+  scanned?: number;
+  items?: Array<{ symbol: string; totalOptionVolume: number }>;
+};
+
+type SortCol = "symbol" | "company" | "last" | "chgPct" | "chg" | "volume" | "volX";
 type VolumeInfo = { volume: number | null; avgVolume20: number | null; ratio: number | null; flagged: boolean };
 type QuickGlance = {
   portfolioPct: number | null;
@@ -48,7 +60,9 @@ type QuickGlance = {
   updatedAt: string;
 };
 
-type TerminalCol = "symbol" | "last" | "chg" | "chgPct" | "volume" | "volX";
+type TerminalCol = "symbol" | "company" | "last" | "chg" | "chgPct" | "volume" | "volX";
+
+const DEFAULT_TERMINAL_COL_ORDER: TerminalCol[] = ["symbol", "company", "last", "chg", "chgPct", "volume", "volX"];
 
 const PCT2 = new Intl.NumberFormat(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
@@ -101,6 +115,7 @@ function volRatioLabel(ratio: number | null) {
   return ratio >= 10 ? `${ratio.toFixed(0)}×` : `${ratio.toFixed(1)}×`;
 }
 
+/** Header control only — must sit inside a single parent `<th>` (never wrap in another `<th>`). */
 function SortTh({
   col,
   label,
@@ -118,14 +133,18 @@ function SortTh({
 }) {
   const active = sortCol === col;
   const arrow = active ? (sortAsc ? " ▲" : " ▼") : "";
-  const ariaSort = active ? (sortAsc ? "ascending" : "descending") : "none";
   return (
-    <th className={"py-2 pr-4 font-medium " + (align === "right" ? "text-right" : "text-left")} aria-sort={ariaSort}>
-      <button type="button" onClick={() => onToggle(col)} className="inline-flex items-center gap-1 hover:underline underline-offset-4">
-        <span>{label}</span>
-        <span className="text-[10px] opacity-70">{arrow}</span>
-      </button>
-    </th>
+    <button
+      type="button"
+      onClick={() => onToggle(col)}
+      className={
+        "inline-flex w-full items-center gap-1 hover:underline underline-offset-4 " +
+        (align === "right" ? "justify-end" : "justify-start")
+      }
+    >
+      <span>{label}</span>
+      <span className="text-[10px] opacity-70">{arrow}</span>
+    </button>
   );
 }
 
@@ -137,14 +156,21 @@ export default function TerminalPage() {
   const [symbols, setSymbols] = useState<string[]>([]);
   const [quotes, setQuotes] = useState<NormalizedQuote[]>([]);
   const [movers, setMovers] = useState<MoversPayload | null>(null);
+  const [optionFlow, setOptionFlow] = useState<OptionFlowPayload | null>(null);
   const [volumeInfo, setVolumeInfo] = useState<Map<string, VolumeInfo>>(new Map());
   const [error, setError] = useState<string | null>(null);
   const [lastUpdatedAt, setLastUpdatedAt] = useState<string | null>(null);
   const [nowMs, setNowMs] = useState<number>(0);
   const [sortCol, setSortCol] = useState<SortCol>("chgPct");
   const [sortAsc, setSortAsc] = useState(false);
-  const [colOrder, setColOrder] = useState<TerminalCol[]>(["symbol", "last", "chg", "chgPct", "volume", "volX"]);
-  const [news, setNews] = useState<Array<{ title: string; link: string; pubDate: string; symbols: string[]; category: string }>>([]);
+  const [colOrder, setColOrder] = useState<TerminalCol[]>(DEFAULT_TERMINAL_COL_ORDER);
+  const [companyBySymbol, setCompanyBySymbol] = useState<Map<string, string>>(new Map());
+  const [news, setNews] = useState<
+    Array<{ title: string; link: string; pubDate: string; symbols: string[]; category: string; source?: string }>
+  >([]);
+  const [xDigest, setXDigest] = useState<Pick<XDigestPayload, "sections" | "posts" | "generatedAt"> | null>(null);
+  const [xDigestLoading, setXDigestLoading] = useState(false);
+  const [xDigestError, setXDigestError] = useState<string | null>(null);
   const [volumeLeadersMode, setVolumeLeadersMode] = useState<"volume" | "volX">("volume");
   const [heatView, setHeatView] = useState<"portfolio" | "spy" | "qqq">("portfolio");
   const [heatItems, setHeatItems] = useState<HeatmapItem[]>([]);
@@ -175,6 +201,30 @@ export default function TerminalPage() {
     const json = (await resp.json()) as { ok: boolean; symbols?: string[]; error?: string };
     if (!json.ok) throw new Error(json.error ?? "Failed to load terminal universe");
     setSymbols(json.symbols ?? []);
+  }
+
+  async function loadCompanyNames(symList: string[]) {
+    if (symList.length === 0) {
+      setCompanyBySymbol(new Map());
+      return;
+    }
+    try {
+      const resp = await fetch("/api/terminal/company-batch", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ symbols: symList }),
+      });
+      const json = (await resp.json()) as { ok?: boolean; names?: Record<string, string | null> };
+      if (!json.ok || !json.names) return;
+      const m = new Map<string, string>();
+      for (const [k, v] of Object.entries(json.names)) {
+        const name = (v ?? "").trim();
+        if (name) m.set(k.toUpperCase(), name);
+      }
+      setCompanyBySymbol(m);
+    } catch {
+      // ignore
+    }
   }
 
   async function loadQuotes(symList: string[]) {
@@ -229,6 +279,42 @@ export default function TerminalPage() {
     setNews(json.items ?? []);
   }
 
+  async function fetchXDigestFromX() {
+    setXDigestError(null);
+    setXDigestLoading(true);
+    try {
+      const resp = await fetch("/api/terminal/x-digest/refresh", { method: "POST" });
+      const json = (await resp.json()) as {
+        ok: boolean;
+        error?: string;
+        empty?: boolean;
+        sections?: XDigestPayload["sections"];
+        posts?: XDigestPayload["posts"];
+        generatedAt?: string;
+      };
+      if (!json.ok) {
+        setXDigest(null);
+        setXDigestError(json.error ?? "Failed to refresh X digest");
+        return;
+      }
+      const generatedAt = json.generatedAt ?? new Date().toISOString();
+      if (json.empty || !json.sections?.length) {
+        setXDigest({ sections: [], posts: json.posts ?? {}, generatedAt });
+        return;
+      }
+      setXDigest({
+        sections: json.sections,
+        posts: json.posts ?? {},
+        generatedAt,
+      });
+    } catch (e) {
+      setXDigest(null);
+      setXDigestError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setXDigestLoading(false);
+    }
+  }
+
   async function loadHeatmap(nextWatchlistId: string | null) {
     const wl = nextWatchlistId ? `&watchlistId=${encodeURIComponent(nextWatchlistId)}` : "";
     const resp = await fetch(`/api/terminal/heatmap?view=${encodeURIComponent(heatView)}${wl}`, { cache: "no-store" });
@@ -244,10 +330,32 @@ export default function TerminalPage() {
     setMovers(json);
   }
 
+  async function loadOptionFlow(nextWatchlistId: string | null) {
+    try {
+      const qs = new URLSearchParams();
+      if (nextWatchlistId) qs.set("watchlistId", nextWatchlistId);
+      const resp = await fetch(`/api/terminal/option-flow?${qs.toString()}`, { cache: "no-store" });
+      const json = (await resp.json()) as OptionFlowPayload;
+      setOptionFlow(json);
+    } catch (e) {
+      setOptionFlow({
+        ok: true,
+        source: "unavailable",
+        hint: e instanceof Error ? e.message : String(e),
+        items: [],
+      });
+    }
+  }
+
   async function refreshAll(nextWatchlistId: string | null) {
     setError(null);
     try {
-      await Promise.all([loadWatchlists().catch(() => null), loadUniverse(nextWatchlistId), loadMovers(nextWatchlistId)]);
+      await Promise.all([
+        loadWatchlists().catch(() => null),
+        loadUniverse(nextWatchlistId),
+        loadMovers(nextWatchlistId),
+        loadOptionFlow(nextWatchlistId),
+      ]);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
@@ -292,6 +400,7 @@ export default function TerminalPage() {
         try {
           await loadUniverse(watchlistId);
           await loadMovers(watchlistId);
+          await loadOptionFlow(watchlistId);
         } catch {
           // ignore
         }
@@ -302,24 +411,49 @@ export default function TerminalPage() {
   );
 
   useEffect(() => {
-    const key = "terminal_table_column_order_v1";
+    const allowed = new Set<TerminalCol>(["symbol", "company", "last", "chg", "chgPct", "volume", "volX"]);
+    const legacyAllowed = new Set<string>(["symbol", "last", "chg", "chgPct", "volume", "volX"]);
+
+    function normalizeOrder(parsed: unknown): TerminalCol[] | null {
+      if (!Array.isArray(parsed)) return null;
+      let clean = parsed.filter((x) => typeof x === "string" && allowed.has(x as TerminalCol)) as TerminalCol[];
+      if (clean.length === 0) {
+        clean = parsed.filter((x) => typeof x === "string" && legacyAllowed.has(x as string)) as TerminalCol[];
+      }
+      if (clean.length === 0) return null;
+      if (!clean.includes("company")) {
+        const i = clean.indexOf("symbol");
+        if (i >= 0) clean.splice(i + 1, 0, "company");
+        else clean = ["symbol", "company", ...clean.filter((c) => c !== "symbol")];
+      }
+      for (const c of DEFAULT_TERMINAL_COL_ORDER) {
+        if (!clean.includes(c)) clean.push(c);
+      }
+      return clean;
+    }
+
     try {
-      const raw = localStorage.getItem(key);
-      if (!raw) return;
-      const parsed = JSON.parse(raw) as unknown;
-      const allowed = new Set<TerminalCol>(["symbol", "last", "chg", "chgPct", "volume", "volX"]);
-      if (!Array.isArray(parsed)) return;
-      const clean = parsed.filter((x) => typeof x === "string" && allowed.has(x as TerminalCol)) as TerminalCol[];
-      if (clean.length) setTimeout(() => setColOrder(clean), 0);
+      const rawV2 = localStorage.getItem("terminal_table_column_order_v2");
+      if (rawV2) {
+        const clean = normalizeOrder(JSON.parse(rawV2) as unknown);
+        if (clean?.length) {
+          setTimeout(() => setColOrder(clean), 0);
+          return;
+        }
+      }
+      const rawV1 = localStorage.getItem("terminal_table_column_order_v1");
+      if (rawV1) {
+        const clean = normalizeOrder(JSON.parse(rawV1) as unknown);
+        if (clean?.length) setTimeout(() => setColOrder(clean), 0);
+      }
     } catch {
       // ignore
     }
   }, []);
 
   useEffect(() => {
-    const key = "terminal_table_column_order_v1";
     try {
-      localStorage.setItem(key, JSON.stringify(colOrder));
+      localStorage.setItem("terminal_table_column_order_v2", JSON.stringify(colOrder));
     } catch {
       // ignore
     }
@@ -329,6 +463,12 @@ export default function TerminalPage() {
     const t = setTimeout(() => setNowMs(Date.now()), 0);
     return () => clearTimeout(t);
   }, [watchlistId, lastUpdatedAt]);
+
+  useEffect(() => {
+    if (symbols.length === 0) return;
+    const t = setTimeout(() => void loadCompanyNames(symbols), 0);
+    return () => clearTimeout(t);
+  }, [symbols]);
 
   useEffect(() => {
     if (symbols.length === 0) return;
@@ -469,7 +609,7 @@ export default function TerminalPage() {
     if (sortCol === c) setSortAsc((v) => !v);
     else {
       setSortCol(c);
-      setSortAsc(c === "symbol" ? true : false);
+      setSortAsc(c === "symbol" || c === "company" ? true : false);
     }
   }
 
@@ -481,6 +621,12 @@ export default function TerminalPage() {
         case "symbol":
           cmp = x.symbol.localeCompare(y.symbol, undefined, { numeric: true, sensitivity: "base" });
           break;
+        case "company": {
+          const na = (companyBySymbol.get(x.symbol.toUpperCase()) ?? "").toLowerCase();
+          const nb = (companyBySymbol.get(y.symbol.toUpperCase()) ?? "").toLowerCase();
+          cmp = na.localeCompare(nb, undefined, { sensitivity: "base" });
+          break;
+        }
         case "last":
           cmp = (num(x.last) ?? -Infinity) - (num(y.last) ?? -Infinity);
           break;
@@ -504,7 +650,7 @@ export default function TerminalPage() {
       return sortAsc ? cmp : -cmp;
     });
     return a;
-  }, [quotes, sortCol, sortAsc, volumeInfo]);
+  }, [quotes, sortCol, sortAsc, volumeInfo, companyBySymbol]);
 
   const volumeLeaders = useMemo(() => {
     const rows = quotes
@@ -541,7 +687,7 @@ export default function TerminalPage() {
   const rthOpen = useMemo(() => isUsEquityRegularSessionOpen(new Date(clockTick)), [clockTick]);
 
   return (
-    <div className="mx-auto flex w-full max-w-7xl flex-1 flex-col gap-6 px-6 py-8">
+    <div className="flex w-full max-w-7xl flex-1 flex-col gap-6 py-8 pl-4 pr-6">
       <div className="flex items-start justify-between gap-4">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Terminal</h1>
@@ -698,7 +844,7 @@ export default function TerminalPage() {
                       setHeatView(v.key);
                     }}
                     className={
-                      "h-7 rounded-md px-2 text-[11px] font-semibold " +
+                      "h-9 min-w-[5.5rem] whitespace-nowrap rounded-md px-3 text-sm font-semibold " +
                       (heatView === v.key
                         ? "bg-zinc-950 text-white dark:bg-white dark:text-black"
                         : "border border-zinc-300 bg-white text-zinc-900 hover:bg-zinc-50 dark:border-white/20 dark:bg-zinc-950 dark:text-zinc-100 dark:hover:bg-white/5")
@@ -726,20 +872,25 @@ export default function TerminalPage() {
                     const label =
                       c === "symbol"
                         ? "Symbol"
-                        : c === "last"
-                          ? "Last"
-                          : c === "chg"
-                            ? "$ Chg"
-                            : c === "chgPct"
-                              ? "% Chg"
-                              : c === "volume"
-                                ? "Volume"
-                                : "Vol ×";
-                    const align = c === "symbol" ? "left" : "right";
+                        : c === "company"
+                          ? "Company"
+                          : c === "last"
+                            ? "Last"
+                            : c === "chg"
+                              ? "$ Chg"
+                              : c === "chgPct"
+                                ? "% Chg"
+                                : c === "volume"
+                                  ? "Volume"
+                                  : "Vol ×";
+                    const align = c === "symbol" || c === "company" ? "left" : "right";
+                    const colActive = sortCol === c;
+                    const ariaSort = colActive ? (sortAsc ? "ascending" : "descending") : "none";
                     return (
                       <th
                         key={c}
                         draggable
+                        aria-sort={ariaSort}
                         onDragStart={(e) => {
                           e.dataTransfer.setData("text/plain", c);
                           e.dataTransfer.effectAllowed = "move";
@@ -752,6 +903,16 @@ export default function TerminalPage() {
                           e.preventDefault();
                           const from = e.dataTransfer.getData("text/plain") as TerminalCol;
                           if (!from || from === c) return;
+                          const allowedCols = new Set<TerminalCol>([
+                            "symbol",
+                            "company",
+                            "last",
+                            "chg",
+                            "chgPct",
+                            "volume",
+                            "volX",
+                          ]);
+                          if (!allowedCols.has(from)) return;
                           setColOrder((prev) => {
                             const next = [...prev];
                             const i = next.indexOf(from);
@@ -763,7 +924,9 @@ export default function TerminalPage() {
                           });
                         }}
                         title="Drag to reorder columns"
-                        className="py-2 pr-4"
+                        className={
+                          "py-2 pr-4 font-medium " + (align === "right" ? "text-right" : "text-left")
+                        }
                       >
                         <SortTh col={c} label={label} sortCol={sortCol} sortAsc={sortAsc} onToggle={toggleSort} align={align as "left" | "right"} />
                       </th>
@@ -790,6 +953,16 @@ export default function TerminalPage() {
                                 <span className="hover:underline underline-offset-4">{q.symbol}</span>
                               </td>
                             );
+                          case "company": {
+                            const cn = companyBySymbol.get(q.symbol.toUpperCase()) ?? "";
+                            return (
+                              <td key={c} className="max-w-[16rem] py-2 pr-4 text-left align-top text-sm text-zinc-700 dark:text-zinc-300">
+                                <span className="line-clamp-2" title={cn || undefined}>
+                                  {cn || "—"}
+                                </span>
+                              </td>
+                            );
+                          }
                           case "last":
                             return (
                               <td key={c} className={"py-2 pr-4 text-right tabular-nums " + priceDirClass(q.last, q.close)}>
@@ -829,30 +1002,75 @@ export default function TerminalPage() {
             </table>
             </div>
 
-            <div className="min-w-0 rounded-2xl border border-zinc-300 bg-white p-4 shadow-sm dark:border-white/20 dark:bg-zinc-950">
-              <div className="text-sm font-semibold">News</div>
-              <div className="mt-2 grid gap-2">
-                {news.slice(0, 10).map((n) => (
-                  <a
-                    key={n.link}
-                    href={n.link}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="rounded-lg border border-zinc-300 bg-white/70 px-3 py-2 text-sm hover:bg-zinc-50 dark:border-white/20 dark:bg-zinc-950 dark:hover:bg-white/5"
+            <div className="flex min-w-0 flex-col gap-4">
+              <div className="rounded-xl border border-zinc-300 bg-white/60 p-4 dark:border-white/20 dark:bg-black/20">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div className="text-sm font-semibold">X digest</div>
+                  <button
+                    type="button"
+                    disabled={xDigestLoading}
+                    onClick={() => void fetchXDigestFromX()}
+                    className="rounded-full border border-zinc-300 bg-white px-4 py-2 text-sm font-medium text-zinc-900 shadow-sm hover:bg-zinc-50 disabled:opacity-50 dark:border-white/20 dark:bg-zinc-950 dark:text-zinc-100 dark:hover:bg-white/5"
                   >
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="min-w-0">
-                        <div className="truncate font-semibold">{n.title}</div>
-                        <div className="mt-1 text-xs text-zinc-600 dark:text-zinc-400">
-                          {(n.category === "highVolume" ? "High volume" : n.category === "watchlist" ? "Watchlist" : "Macro") +
-                            (n.symbols?.length ? ` • ${n.symbols.slice(0, 4).join(",")}` : "")}
+                    {xDigestLoading ? "Fetching…" : "Fetch from X"}
+                  </button>
+                </div>
+                <p className="mt-2 text-xs text-zinc-600 dark:text-zinc-400">
+                  Loads your home timeline (24h), updates the local digest cache, and shows themed ideas. Not run automatically.
+                </p>
+                {xDigestError ? (
+                  <div className="mt-2 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-800 dark:bg-red-950/40 dark:text-red-200">
+                    {xDigestError}
+                  </div>
+                ) : null}
+                {xDigest?.generatedAt ? (
+                  <div className="mt-3">
+                    <XDataAgeBanner generatedAt={xDigest.generatedAt} />
+                  </div>
+                ) : null}
+              </div>
+              {xDigest && xDigest.sections.length > 0 ? (
+                <XNewsSection variant="digest" payload={xDigest} showTitle={false} />
+              ) : xDigest && xDigest.sections.length === 0 ? (
+                <XNewsSection
+                  variant="digest"
+                  payload={xDigest}
+                  showTitle={false}
+                  emptyMessage="Fetch completed but no themed sections were produced (empty 24h window or summarizer output)."
+                />
+              ) : null}
+              <div className="min-w-0 rounded-2xl border border-zinc-300 bg-white p-4 shadow-sm dark:border-white/20 dark:bg-zinc-950">
+                <div className="text-sm font-semibold">News</div>
+                <div className="mt-2 grid gap-2">
+                  {news.slice(0, 10).map((n) => (
+                    <a
+                      key={n.link}
+                      href={n.link}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="rounded-lg border border-zinc-300 bg-white/70 px-3 py-2 text-sm hover:bg-zinc-50 dark:border-white/20 dark:bg-zinc-950 dark:hover:bg-white/5"
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="truncate font-semibold">{n.title}</span>
+                            {n.source ? (
+                              <span className="shrink-0 rounded-full bg-zinc-200 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-zinc-800 dark:bg-white/15 dark:text-zinc-200">
+                                {n.source}
+                              </span>
+                            ) : null}
+                          </div>
+                          <div className="mt-1 text-xs text-zinc-600 dark:text-zinc-400">
+                            {(n.category === "highVolume" ? "High volume" : n.category === "watchlist" ? "Watchlist" : "Macro") +
+                              (n.symbols?.length ? ` • ${n.symbols.slice(0, 4).join(",")}` : "")}
+                          </div>
                         </div>
+                        <div className="shrink-0 text-xs text-zinc-500 dark:text-zinc-400">{n.pubDate ? n.pubDate.slice(0, 16) : ""}</div>
                       </div>
-                      <div className="shrink-0 text-xs text-zinc-500 dark:text-zinc-400">{n.pubDate ? n.pubDate.slice(0, 16) : ""}</div>
-                    </div>
-                  </a>
-                ))}
-                {news.length === 0 ? <div className="text-sm text-zinc-600 dark:text-zinc-400">No headlines yet.</div> : null}
+                    </a>
+                  ))}
+                  {news.length === 0 ? <div className="text-sm text-zinc-600 dark:text-zinc-400">No headlines yet.</div> : null}
+                </div>
               </div>
             </div>
           </div>
@@ -908,6 +1126,38 @@ export default function TerminalPage() {
               </div>
 
               <div className="mt-5">
+                <div className="text-sm font-semibold">Top option flow</div>
+                <div className="mt-1 text-[11px] text-zinc-600 dark:text-zinc-400">
+                  Total option volume from Schwab chains (subset of your terminal universe).
+                </div>
+                {optionFlow?.source === "unavailable" && (optionFlow.hint || optionFlow.detail) ? (
+                  <div className="mt-2 text-xs text-zinc-600 dark:text-zinc-400">
+                    {optionFlow.hint ?? optionFlow.detail}
+                  </div>
+                ) : null}
+                <div className="mt-2 grid gap-1">
+                  {(optionFlow?.items ?? []).slice(0, 10).map((it) => (
+                    <button
+                      key={it.symbol}
+                      type="button"
+                      onClick={() => router.push(`/terminal/symbol/${encodeURIComponent(it.symbol)}`)}
+                      className="flex w-full items-center justify-between rounded-md border border-zinc-300 bg-white/70 px-2 py-1.5 text-xs dark:border-white/15 dark:bg-zinc-950/40"
+                      title="Open symbol"
+                    >
+                      <span className="font-semibold">{it.symbol}</span>
+                      <span className="tabular-nums text-zinc-700 dark:text-zinc-300">
+                        {Math.round(it.totalOptionVolume).toLocaleString()} opt vol
+                      </span>
+                    </button>
+                  ))}
+                  {optionFlow?.ok && (optionFlow.items?.length ?? 0) === 0 && optionFlow.source === "schwab" ? (
+                    <div className="text-sm text-zinc-600 dark:text-zinc-400">No chain volume in the scanned set.</div>
+                  ) : null}
+                  {!optionFlow ? <div className="text-sm text-zinc-600 dark:text-zinc-400">Loading…</div> : null}
+                </div>
+              </div>
+
+              <div className="mt-5">
                 <div className="flex items-center justify-between gap-2">
                   <div className="text-sm font-semibold">Volume leaders</div>
                   <div className="flex items-center gap-1">
@@ -915,7 +1165,7 @@ export default function TerminalPage() {
                       type="button"
                       onClick={() => setVolumeLeadersMode("volume")}
                       className={
-                        "h-7 rounded-md px-2 text-[11px] font-semibold " +
+                        "h-9 min-w-[3.25rem] whitespace-nowrap rounded-md px-3 text-sm font-semibold " +
                         (volumeLeadersMode === "volume"
                           ? "bg-zinc-950 text-white dark:bg-white dark:text-black"
                           : "border border-zinc-300 bg-white text-zinc-900 hover:bg-zinc-50 dark:border-white/20 dark:bg-zinc-950 dark:text-zinc-100 dark:hover:bg-white/5")
@@ -928,7 +1178,7 @@ export default function TerminalPage() {
                       type="button"
                       onClick={() => setVolumeLeadersMode("volX")}
                       className={
-                        "h-7 rounded-md px-2 text-[11px] font-semibold " +
+                        "h-9 min-w-[3.25rem] whitespace-nowrap rounded-md px-3 text-sm font-semibold " +
                         (volumeLeadersMode === "volX"
                           ? "bg-zinc-950 text-white dark:bg-white dark:text-black"
                           : "border border-zinc-300 bg-white text-zinc-900 hover:bg-zinc-50 dark:border-white/20 dark:bg-zinc-950 dark:text-zinc-100 dark:hover:bg-white/5")

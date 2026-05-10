@@ -16,6 +16,8 @@ import {
 } from "recharts";
 
 import { usePrivacy } from "@/app/components/PrivacyProvider";
+import { XDataAgeBanner } from "@/app/components/terminal/XDataAgeBanner";
+import { XNewsSection } from "@/app/components/terminal/XNewsSection";
 import { formatInt, formatNum, formatUsd2 } from "@/lib/format";
 import { posNegClass, priceDirClass } from "@/lib/terminal/colors";
 
@@ -41,6 +43,7 @@ type PositionsRow = {
   securityType: string;
   symbol: string;
   underlyingSymbol: string | null;
+  effectiveUnderlyingSymbol?: string;
   quantity: number;
   marketValue: number | null;
   delta: number | null;
@@ -63,7 +66,17 @@ type CompanyPayload =
     }
   | { ok: false; error: string };
 
-type NewsItem = { title: string; link: string; pubDate: string; symbols: string[]; category: string };
+type NewsItem = { title: string; link: string; pubDate: string; symbols: string[]; category: string; source?: string };
+
+type XSymbolApiPost = { id: string; url: string; text: string; author: string; createdAt: string };
+
+type XPostsState = {
+  symbol: string;
+  summary: string;
+  posts: XSymbolApiPost[];
+  generatedAt: string;
+  disconnected?: boolean;
+};
 
 const PCT2 = new Intl.NumberFormat(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const USD_COMPACT = new Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: 1 });
@@ -90,12 +103,15 @@ export default function TerminalSymbolPage() {
   const [nowMs, setNowMs] = useState<number>(0);
   const [positions, setPositions] = useState<PositionsRow[]>([]);
   const [news, setNews] = useState<NewsItem[]>([]);
+  const [xPosts, setXPosts] = useState<XPostsState | null>(null);
+  const [xPostsLoading, setXPostsLoading] = useState(false);
+  const [xPostsError, setXPostsError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   async function loadAll() {
     setError(null);
     try {
-      const [qResp, bResp, pResp, companyResp, newsResp] = await Promise.all([
+      const [qResp, bResp, pResp, companyResp] = await Promise.all([
         fetch("/api/quotes", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -104,7 +120,6 @@ export default function TerminalSymbolPage() {
         fetch(`/api/performance/benchmarks?symbols=${encodeURIComponent([sym, "SPY", "QQQ"].join(","))}`, { cache: "no-store" }),
         fetch("/api/positions", { cache: "no-store" }),
         fetch(`/api/terminal/company?symbol=${encodeURIComponent(sym)}`, { cache: "no-store" }),
-        fetch(`/api/terminal/news?symbols=${encodeURIComponent(sym)}&mode=company`, { cache: "no-store" }),
       ]);
 
       const qJson = (await qResp.json()) as { ok: boolean; quotes?: NormalizedQuote[]; error?: string };
@@ -121,13 +136,41 @@ export default function TerminalSymbolPage() {
       const rows = (pJson.positions ?? []).filter((r) => {
         const s = normSym(r.symbol ?? "");
         const u = normSym(r.underlyingSymbol ?? "");
-        return s === sym || u === sym;
+        const eff = normSym(r.effectiveUnderlyingSymbol ?? "");
+        return s === sym || u === sym || eff === sym;
       });
       setPositions(rows);
 
-      const compJson = (await companyResp.json().catch(() => null)) as CompanyPayload | null;
-      setCompany(compJson);
+      let companyPayload: CompanyPayload | null = null;
+      if (companyResp.ok) {
+        try {
+          companyPayload = (await companyResp.json()) as CompanyPayload;
+        } catch (e) {
+          companyPayload = { ok: false, error: e instanceof Error ? e.message : "Invalid company response" };
+        }
+      } else {
+        const errText = await companyResp.text().catch(() => "");
+        let detail = errText.slice(0, 240);
+        try {
+          const j = JSON.parse(errText) as { error?: string };
+          if (typeof j?.error === "string" && j.error) detail = j.error;
+        } catch {
+          /* keep text slice */
+        }
+        companyPayload = {
+          ok: false,
+          error: `Fundamentals request failed (${companyResp.status})${detail ? `: ${detail}` : ""}`,
+        };
+      }
+      setCompany(companyPayload);
 
+      const companyName =
+        companyPayload && companyPayload.ok ? ((companyPayload.companyName ?? "").trim() || null) : null;
+      const newsQs = new URLSearchParams();
+      newsQs.set("symbols", sym);
+      newsQs.set("mode", "company");
+      if (companyName) newsQs.set("companyName", companyName);
+      const newsResp = await fetch(`/api/terminal/news?${newsQs.toString()}`, { cache: "no-store" });
       const newsJson = (await newsResp.json().catch(() => null)) as { ok: boolean; items?: NewsItem[] } | null;
       setNews(newsJson?.ok ? (newsJson.items ?? []) : []);
 
@@ -141,6 +184,53 @@ export default function TerminalSymbolPage() {
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sym]);
+
+  async function fetchXPostsFromX() {
+    setXPostsError(null);
+    setXPostsLoading(true);
+    try {
+      const resp = await fetch("/api/terminal/x-symbol/refresh", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ symbol: sym }),
+      });
+      const json = (await resp.json()) as {
+        ok: boolean;
+        error?: string;
+        disconnected?: boolean;
+        symbol?: string;
+        summary?: string;
+        posts?: XSymbolApiPost[];
+        generatedAt?: string;
+      };
+      if (!json.ok) {
+        if (json.disconnected) {
+          setXPosts({
+            symbol: sym,
+            summary: json.error ?? "Connect X under Connections.",
+            posts: [],
+            generatedAt: new Date().toISOString(),
+            disconnected: true,
+          });
+        } else {
+          setXPosts(null);
+          setXPostsError(json.error ?? "Failed to fetch X posts");
+        }
+        return;
+      }
+      setXPosts({
+        symbol: json.symbol ?? sym,
+        summary: json.summary ?? "",
+        posts: json.posts ?? [],
+        generatedAt: json.generatedAt ?? new Date().toISOString(),
+      });
+    } catch (e) {
+      setXPosts(null);
+      setXPostsError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setXPostsLoading(false);
+    }
+  }
 
   useEquityMarketPolling(
     () => {
@@ -183,13 +273,19 @@ export default function TerminalSymbolPage() {
   }, [positions, quote]);
 
   const optionContribs = useMemo(() => {
-    const out: Array<{ optionSymbol: string; quantity: number; delta: number; syntheticShares: number }> = [];
+    const out: Array<{
+      accountId: string;
+      optionSymbol: string;
+      quantity: number;
+      delta: number;
+      syntheticShares: number;
+    }> = [];
     for (const r of positions) {
       if (r.securityType !== "option") continue;
       const d = typeof r.delta === "number" && Number.isFinite(r.delta) ? r.delta : 0;
       const qty = r.quantity ?? 0;
       const syntheticShares = qty * 100 * d;
-      out.push({ optionSymbol: r.symbol, quantity: qty, delta: d, syntheticShares });
+      out.push({ accountId: r.accountId, optionSymbol: r.symbol, quantity: qty, delta: d, syntheticShares });
     }
     out.sort((a, b) => Math.abs(b.syntheticShares) - Math.abs(a.syntheticShares));
     return out.slice(0, 10);
@@ -273,7 +369,7 @@ export default function TerminalSymbolPage() {
     company && company.ok ? ((company.companyName ?? "").trim() || sym) : sym;
 
   return (
-    <div className="mx-auto flex w-full max-w-6xl flex-1 flex-col gap-6 px-6 py-8">
+    <div className="flex w-full max-w-6xl flex-1 flex-col gap-6 py-8 pl-4 pr-6">
       <div className="flex items-start justify-between gap-4">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">{headerCompanyName}</h1>
@@ -325,10 +421,18 @@ export default function TerminalSymbolPage() {
               </div>
             </div>
             <div className="grid grid-cols-2 gap-2 text-xs text-zinc-600 dark:text-zinc-400">
-              <div>Bid: {quote?.bid == null ? "—" : quote.bid.toFixed(2)}</div>
-              <div>Ask: {quote?.ask == null ? "—" : quote.ask.toFixed(2)}</div>
-              <div>High: {quote?.high == null ? "—" : quote.high.toFixed(2)}</div>
-              <div>Low: {quote?.low == null ? "—" : quote.low.toFixed(2)}</div>
+              <div className={priceDirClass(quote?.bid, quote?.close)}>
+                Bid: {quote?.bid == null ? "—" : quote.bid.toFixed(2)}
+              </div>
+              <div className={priceDirClass(quote?.ask, quote?.close)}>
+                Ask: {quote?.ask == null ? "—" : quote.ask.toFixed(2)}
+              </div>
+              <div className={priceDirClass(quote?.high, quote?.close)}>
+                High: {quote?.high == null ? "—" : quote.high.toFixed(2)}
+              </div>
+              <div className={priceDirClass(quote?.low, quote?.close)}>
+                Low: {quote?.low == null ? "—" : quote.low.toFixed(2)}
+              </div>
             </div>
           </div>
         </div>
@@ -339,7 +443,13 @@ export default function TerminalSymbolPage() {
           <div className="rounded-xl border border-zinc-300 bg-white/60 p-4 dark:border-white/20 dark:bg-black/20">
             <div className="text-sm font-semibold">Company</div>
             {company?.ok !== true ? (
-              <div className="mt-2 text-sm text-zinc-600 dark:text-zinc-400">Company fundamentals unavailable.</div>
+              <div className="mt-2 text-sm text-amber-800 dark:text-amber-200/90">
+                {company == null
+                  ? "Loading company data…"
+                  : company.ok === false
+                    ? company.error
+                    : "Company fundamentals unavailable."}
+              </div>
             ) : (
               <div className="mt-2 grid gap-2 text-sm">
                 <div className="text-base font-semibold">{company.companyName ?? sym}</div>
@@ -351,8 +461,8 @@ export default function TerminalSymbolPage() {
                   <div>P/E: {company.pe == null ? "—" : company.pe.toFixed(1)}</div>
                   <div>Dividend: {company.divYield == null ? "—" : PCT2.format(company.divYield * 100) + "%"}</div>
                   <div>Beta: {company.beta == null ? "—" : company.beta.toFixed(2)}</div>
-                  <div>52w low: {company.week52Low == null ? "—" : company.week52Low.toFixed(2)}</div>
-                  <div>52w high: {company.week52High == null ? "—" : company.week52High.toFixed(2)}</div>
+                  <div className={posNegClass(company.week52Low)}>52w low: {company.week52Low == null ? "—" : company.week52Low.toFixed(2)}</div>
+                  <div className={posNegClass(company.week52High)}>52w high: {company.week52High == null ? "—" : company.week52High.toFixed(2)}</div>
                   <div>Avg vol: {company.avgVol == null ? "—" : Math.round(company.avgVol).toLocaleString()}</div>
                 </div>
               </div>
@@ -411,7 +521,13 @@ export default function TerminalSymbolPage() {
             <div className="mt-2 text-sm text-zinc-600 dark:text-zinc-400">Not enough cached history yet.</div>
           ) : (
             <div className="mt-2 h-72 w-full min-w-0">
-              <ResponsiveContainer>
+              <ResponsiveContainer
+                width="100%"
+                height="100%"
+                minWidth={0}
+                minHeight={288}
+                initialDimension={{ width: 400, height: 288 }}
+              >
                 <LineChart data={perfData}>
                   <CartesianGrid strokeDasharray="3 3" />
                   <XAxis dataKey="date" tick={false} />
@@ -470,10 +586,10 @@ export default function TerminalSymbolPage() {
                 </thead>
                 <tbody className="tabular-nums">
                   {optionContribs.map((c) => (
-                    <tr key={c.optionSymbol} className="border-t border-zinc-200/70 dark:border-white/10">
+                    <tr key={`${c.accountId}:${c.optionSymbol}`} className="border-t border-zinc-200/70 dark:border-white/10">
                       <td className="py-1 pr-4">{c.optionSymbol}</td>
-                      <td className="py-1 pr-4 text-right">{c.quantity.toFixed(0)}</td>
-                      <td className="py-1 pr-4 text-right">{c.delta.toFixed(3)}</td>
+                      <td className={"py-1 pr-4 text-right " + posNegClass(c.quantity)}>{formatInt(c.quantity)}</td>
+                      <td className={"py-1 pr-4 text-right " + posNegClass(c.delta)}>{formatNum(c.delta, 3)}</td>
                       <td className={"py-1 text-right font-semibold " + posNegClass(c.syntheticShares)}>{c.syntheticShares.toFixed(2)}</td>
                     </tr>
                   ))}
@@ -485,27 +601,84 @@ export default function TerminalSymbolPage() {
       </section>
 
       <section className="rounded-2xl border border-zinc-300 bg-white p-6 shadow-sm dark:border-white/20 dark:bg-zinc-950">
-        <div className="text-sm font-semibold">News</div>
-        {news.length === 0 ? (
-          <div className="mt-2 text-sm text-zinc-600 dark:text-zinc-400">No items found.</div>
-        ) : (
-          <div className="mt-3 grid gap-2">
-            {news.slice(0, 12).map((it) => (
-              <a
-                key={it.link}
-                href={it.link}
-                target="_blank"
-                rel="noreferrer"
-                className="rounded-xl border border-zinc-300 bg-white/60 p-3 text-sm hover:bg-white dark:border-white/20 dark:bg-black/20 dark:hover:bg-black/30"
-              >
-                <div className="font-medium text-zinc-900 dark:text-zinc-100">{it.title}</div>
-                <div className="mt-1 text-xs text-zinc-600 dark:text-zinc-400">
-                  {(it.category ? it.category + " • " : "") + (it.pubDate ? new Date(it.pubDate).toLocaleString() : "")}
-                </div>
-              </a>
-            ))}
+        <div className="rounded-xl border border-zinc-300 bg-white/60 p-4 dark:border-white/20 dark:bg-black/20">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="text-sm font-semibold">X — {sym}</div>
+            <button
+              type="button"
+              disabled={xPostsLoading}
+              onClick={() => void fetchXPostsFromX()}
+              className="rounded-full border border-zinc-300 bg-white px-4 py-2 text-sm font-medium text-zinc-900 shadow-sm hover:bg-zinc-50 disabled:opacity-50 dark:border-white/20 dark:bg-zinc-950 dark:text-zinc-100 dark:hover:bg-white/5"
+            >
+              {xPostsLoading ? "Fetching…" : "Fetch from X"}
+            </button>
           </div>
-        )}
+          <p className="mt-2 text-xs text-zinc-600 dark:text-zinc-400">
+            Searches recent posts (~7d) for this symbol and cashtag, caches locally, and shows a short summary. Not loaded automatically.
+          </p>
+          {xPostsError ? (
+            <div className="mt-2 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-800 dark:bg-red-950/40 dark:text-red-200">{xPostsError}</div>
+          ) : null}
+          {xPosts?.generatedAt && !xPosts.disconnected ? (
+            <div className="mt-3">
+              <XDataAgeBanner generatedAt={xPosts.generatedAt} />
+            </div>
+          ) : null}
+        </div>
+
+        <div className="mt-4">
+          {xPosts ? (
+            <XNewsSection
+              variant="symbol"
+              symbol={sym}
+              showFetchedAt={false}
+              payload={
+                xPosts.disconnected
+                  ? { disconnected: true, summary: xPosts.summary, symbol: sym, posts: [], generatedAt: xPosts.generatedAt, ok: true }
+                  : {
+                      symbol: xPosts.symbol,
+                      summary: xPosts.summary,
+                      posts: xPosts.posts,
+                      generatedAt: xPosts.generatedAt,
+                      ok: true,
+                    }
+              }
+            />
+          ) : (
+            <XNewsSection variant="symbol" symbol={sym} payload={null} idle />
+          )}
+        </div>
+
+        <div className="mt-6">
+          <div className="text-sm font-semibold">News</div>
+          {news.length === 0 ? (
+            <div className="mt-2 text-sm text-zinc-600 dark:text-zinc-400">No items found.</div>
+          ) : (
+            <div className="mt-3 grid gap-2">
+              {news.slice(0, 12).map((it) => (
+                <a
+                  key={it.link}
+                  href={it.link}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="rounded-xl border border-zinc-300 bg-white/60 p-3 text-sm hover:bg-white dark:border-white/20 dark:bg-black/20 dark:hover:bg-black/30"
+                >
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="font-medium text-zinc-900 dark:text-zinc-100">{it.title}</span>
+                    {it.source ? (
+                      <span className="shrink-0 rounded-full bg-zinc-200 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-zinc-800 dark:bg-white/15 dark:text-zinc-200">
+                        {it.source}
+                      </span>
+                    ) : null}
+                  </div>
+                  <div className="mt-1 text-xs text-zinc-600 dark:text-zinc-400">
+                    {(it.category ? it.category + " • " : "") + (it.pubDate ? new Date(it.pubDate).toLocaleString() : "")}
+                  </div>
+                </a>
+              ))}
+            </div>
+          )}
+        </div>
       </section>
     </div>
   );

@@ -14,92 +14,125 @@ import {
   YAxis,
 } from "recharts";
 
-type Point = { asOf: string; totalMarketValue: number };
-type BenchPoint = { date: string; close: number };
+import { usePrivacy } from "@/app/components/PrivacyProvider";
+import { formatUsd2 } from "@/lib/format";
+import { timeframeToWindowRangeMs, type PerformanceHistoryTimeframe } from "@/lib/portfolio/performanceWindow";
+
 type TodayPayload = { ok: boolean; portfolioPct: number | null; SPY: number | null; QQQ: number | null };
 
+type HistoryChartRow = {
+  date: string;
+  x_ms: number;
+  portfolio: number;
+  spy: number | null;
+  qqq: number | null;
+  raw_portfolio_value: number;
+  spy_close: number | null;
+  qqq_close: number | null;
+};
+
+type HistoryPayload = {
+  ok: boolean;
+  chart_data?: HistoryChartRow[];
+  meta?: {
+    source_mix?: string;
+    useToday?: boolean;
+    note?: string;
+    window_start_ms?: number;
+    window_end_ms?: number;
+    benchmark_spy_rows?: number;
+    benchmark_qqq_rows?: number;
+  };
+  total_return_pct?: number | null;
+  vs_spy?: number | null;
+  vs_qqq?: number | null;
+  error?: string;
+};
+
+type ChartRow = {
+  asOf: string;
+  asOfLabel: string;
+  xMs: number;
+  portfolio: number;
+  portfolioPos: number;
+  portfolioNeg: number;
+  SPY: number | null;
+  SPYPos: number | null;
+  SPYNeg: number | null;
+  QQQ: number | null;
+  QQQPos: number | null;
+  QQQNeg: number | null;
+  raw_portfolio_value?: number;
+  spy_close?: number | null;
+  qqq_close?: number | null;
+};
+
+async function safeJson(resp: Response) {
+  const text = await resp.text();
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    const url = resp.url || "(unknown url)";
+    throw new Error(`Non-JSON response (${resp.status}) from ${url}: ${text ? text.slice(0, 200) : "(empty body)"}`);
+  }
+}
+
 export default function PerformancePage() {
-  const [series, setSeries] = useState<Point[]>([]);
+  const privacy = usePrivacy();
   const [bucket, setBucket] = useState<"combined" | "retirement" | "brokerage">("combined");
   const [windowKey, setWindowKey] = useState<"1D" | "1W" | "1M" | "3M" | "6M" | "1Y" | "3Y" | "5Y">("6M");
-  const [nowMs, setNowMs] = useState(() => Date.now());
-  const [bench, setBench] = useState<Record<string, BenchPoint[]>>({});
   const [today, setToday] = useState<TodayPayload | null>(null);
+  const [hist, setHist] = useState<HistoryPayload | null>(null);
+  const [histLoading, setHistLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    (async () => {
+    void (async () => {
       setError(null);
-      async function safeJson(resp: Response) {
-        const text = await resp.text();
-        try {
-          return JSON.parse(text) as unknown;
-        } catch {
-          const url = resp.url || "(unknown url)";
-          throw new Error(
-            `Non-JSON response (${resp.status}) from ${url}: ${text ? text.slice(0, 200) : "(empty body)"}`,
-          );
-        }
-      }
-
-      const pResp = await fetch("/api/performance", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ bucket }),
-      });
-
-      const pJson = (await safeJson(pResp)) as { ok: boolean; series?: Point[]; error?: string };
-      if (!pJson.ok) throw new Error(pJson.error ?? "Failed to load performance");
-      setSeries(pJson.series ?? []);
-
-      // Benchmarks are optional (demo mode may not have Schwab connected yet).
-      try {
-        const bResp = await fetch("/api/performance/benchmarks?symbols=SPY,QQQ");
-        const bJson = (await safeJson(bResp)) as {
-          ok: boolean;
-          series?: Record<string, BenchPoint[]>;
-          error?: string;
-        };
-        if (bJson.ok) setBench(bJson.series ?? {});
-        else setBench({});
-      } catch {
-        setBench({});
-      }
-
-      // Today % (live)
       try {
         const tResp = await fetch("/api/performance/today", { cache: "no-store" });
         const tJson = (await safeJson(tResp)) as TodayPayload;
         if (tJson.ok) setToday(tJson);
         else setToday(null);
-      } catch {
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
         setToday(null);
       }
-    })().catch((e) => setError(e instanceof Error ? e.message : String(e)));
+    })();
   }, [bucket]);
 
   useEffect(() => {
-    const t = setTimeout(() => setNowMs(Date.now()), 0);
-    return () => clearTimeout(t);
-  }, [bucket, windowKey]);
-
-  const windowStartMs = useMemo(() => {
-    const day = 24 * 60 * 60 * 1000;
-    const map: Record<typeof windowKey, number> = {
-      "1D": 1 * day,
-      "1W": 7 * day,
-      "1M": 30 * day,
-      "3M": 90 * day,
-      "6M": 180 * day,
-      "1Y": 365 * day,
-      "3Y": 3 * 365 * day,
-      "5Y": 5 * 365 * day,
-    };
-    return nowMs - map[windowKey];
-  }, [windowKey, nowMs]);
-
-  const chartData = useMemo(() => {
     if (windowKey === "1D") {
+      setHist(null);
+      setHistLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setHistLoading(true);
+    void (async () => {
+      try {
+        const url = `/api/performance/history?timeframe=${encodeURIComponent(windowKey)}&bucket=${encodeURIComponent(bucket)}`;
+        const resp = await fetch(url, { cache: "no-store" });
+        const json = (await safeJson(resp)) as HistoryPayload;
+        if (!cancelled) {
+          if (json.ok) setHist(json);
+          else setHist({ ok: false, error: json.error ?? "Failed to load history" });
+        }
+      } catch (e) {
+        if (!cancelled) setHist({ ok: false, error: e instanceof Error ? e.message : String(e) });
+      } finally {
+        if (!cancelled) setHistLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [windowKey, bucket]);
+
+  const chartData = useMemo((): ChartRow[] => {
+    const endMs = Date.now();
+    if (windowKey === "1D") {
+      const startMs = endMs - 86400000;
       const p = today?.portfolioPct ?? null;
       const spy = today?.SPY ?? null;
       const qqq = today?.QQQ ?? null;
@@ -107,6 +140,7 @@ export default function PerformancePage() {
         {
           asOf: "start",
           asOfLabel: "Start",
+          xMs: startMs,
           portfolio: 0,
           portfolioPos: 0,
           portfolioNeg: 0,
@@ -120,6 +154,7 @@ export default function PerformancePage() {
         {
           asOf: "now",
           asOfLabel: "Now",
+          xMs: endMs,
           portfolio: p ?? 0,
           portfolioPos: Math.max(0, p ?? 0),
           portfolioNeg: Math.min(0, p ?? 0),
@@ -132,70 +167,29 @@ export default function PerformancePage() {
         },
       ];
     }
-    if (series.length === 0) return [];
-    const filtered = series.filter((p) => new Date(p.asOf).getTime() >= windowStartMs);
-    if (filtered.length === 0) return [];
-    const start = filtered[0]!.totalMarketValue || 1;
-    const startIso = new Date(filtered[0]!.asOf).toISOString().slice(0, 10);
 
-    // Helper to find closest benchmark close on or before the date.
-    const baselineClose = (sym: string) => {
-      const s = bench[sym] ?? [];
-      if (s.length === 0) return null;
-      let lo = 0;
-      let hi = s.length - 1;
-      let idx = -1;
-      while (lo <= hi) {
-        const mid = (lo + hi) >> 1;
-        if (s[mid]!.date <= startIso) {
-          idx = mid;
-          lo = mid + 1;
-        } else {
-          hi = mid - 1;
-        }
-      }
-      if (idx < 0) return null;
-      const c = s[idx]!.close;
-      return Number.isFinite(c) && c > 0 ? c : null;
-    };
+    const rows = hist?.chart_data ?? [];
+    if (rows.length === 0) return [];
 
-    const baseline = {
-      SPY: baselineClose("SPY"),
-      QQQ: baselineClose("QQQ"),
-    };
-
-    const getBenchPct = (sym: "SPY" | "QQQ", isoDate: string) => {
-      const s = bench[sym] ?? [];
-      if (s.length === 0) return null;
-      // ISO dates sort lexicographically
-      let lo = 0;
-      let hi = s.length - 1;
-      let idx = -1;
-      while (lo <= hi) {
-        const mid = (lo + hi) >> 1;
-        if (s[mid]!.date <= isoDate) {
-          idx = mid;
-          lo = mid + 1;
-        } else {
-          hi = mid - 1;
-        }
-      }
-      if (idx < 0) return null;
-      const base = baseline[sym];
-      if (base == null) return null;
-      const close = s[idx]!.close;
-      if (!Number.isFinite(close) || close <= 0) return null;
-      return ((close / base) - 1) * 100;
-    };
-
-    return filtered.map((p) => {
-      const isoDate = new Date(p.asOf).toISOString().slice(0, 10);
-      const portfolio = ((p.totalMarketValue / start) - 1) * 100;
-      const spy = getBenchPct("SPY", isoDate);
-      const qqq = getBenchPct("QQQ", isoDate);
+    return rows.map((r) => {
+      const portfolio = r.portfolio;
+      const spy = r.spy;
+      const qqq = r.qqq;
+      const xMs =
+        typeof r.x_ms === "number" && Number.isFinite(r.x_ms)
+          ? r.x_ms
+          : Date.UTC(
+              Number(r.date.slice(0, 4)),
+              Number(r.date.slice(5, 7)) - 1,
+              Number(r.date.slice(8, 10)),
+              12,
+              0,
+              0,
+            );
       return {
-        asOf: p.asOf,
-        asOfLabel: new Date(p.asOf).toLocaleDateString(),
+        asOf: r.date,
+        asOfLabel: r.date,
+        xMs,
         portfolio,
         portfolioPos: Math.max(0, portfolio),
         portfolioNeg: Math.min(0, portfolio),
@@ -205,9 +199,23 @@ export default function PerformancePage() {
         QQQ: qqq,
         QQQPos: qqq == null ? null : Math.max(0, qqq),
         QQQNeg: qqq == null ? null : Math.min(0, qqq),
+        raw_portfolio_value: r.raw_portfolio_value,
+        spy_close: r.spy_close,
+        qqq_close: r.qqq_close,
       };
     });
-  }, [series, bench, windowStartMs, windowKey, today]);
+  }, [windowKey, today, hist]);
+
+  const windowXDomain = useMemo((): [number, number] => {
+    const endMs = Date.now();
+    if (windowKey === "1D") return [endMs - 86400000, endMs];
+    const wk = windowKey as PerformanceHistoryTimeframe;
+    if (hist?.ok && hist.meta?.window_start_ms != null && hist.meta?.window_end_ms != null) {
+      return [hist.meta.window_start_ms, hist.meta.window_end_ms];
+    }
+    const { startMs, endMs: e } = timeframeToWindowRangeMs(wk, endMs);
+    return [startMs, e];
+  }, [windowKey, hist]);
 
   const COLORS = {
     portfolio: "#0f766e",
@@ -215,13 +223,26 @@ export default function PerformancePage() {
     QQQ: "#7c3aed",
   } as const;
 
+  const histNote =
+    windowKey !== "1D" && hist?.ok && hist.meta?.source_mix
+      ? hist.meta.source_mix === "snapshots"
+        ? "Long windows use weekly portfolio snapshots with SPY/QQQ on the same dates."
+        : "Using dense sync points in this window (few weekly snapshots yet)."
+      : null;
+
+  const benchWarn =
+    windowKey !== "1D" && hist?.ok && (hist.meta?.benchmark_spy_rows ?? 0) === 0
+      ? "No SPY daily prices in the local cache yet (Schwab market pricehistory may be empty or blocked). Benchmark lines stay hidden until data loads."
+      : null;
+
   return (
-    <div className="mx-auto flex w-full max-w-6xl flex-1 flex-col gap-6 px-6 py-8">
+    <div className="flex w-full max-w-6xl flex-1 flex-col gap-6 py-8 pl-4 pr-6">
       <div className="flex items-start justify-between gap-4">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Performance</h1>
           <p className="mt-2 text-sm leading-6 text-zinc-600 dark:text-zinc-400">
-            Time series is built from holdings snapshots created on each sync (and account balance points when available).
+            1D uses live day change. Longer windows use weekly portfolio snapshots (backfilled from sync history) with SPY
+            and QQQ closes aligned per date. Run <code className="rounded bg-zinc-100 px-1 dark:bg-white/10">npm run backfill:portfolio-snapshots</code> once to populate history.
           </p>
         </div>
         <div className="flex items-center gap-3">
@@ -294,6 +315,8 @@ export default function PerformancePage() {
             <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: COLORS.QQQ }} />
             <span>QQQ</span>
           </div>
+          {histNote ? <span className="text-xs text-zinc-500 dark:text-zinc-500">{histNote}</span> : null}
+          {benchWarn ? <span className="text-xs text-amber-600 dark:text-amber-400">{benchWarn}</span> : null}
         </div>
 
         {error ? (
@@ -302,21 +325,63 @@ export default function PerformancePage() {
           </div>
         ) : null}
 
-        {chartData.length < 2 ? (
+        {windowKey !== "1D" && hist && !hist.ok && hist.error ? (
+          <div className="mb-2 rounded-xl bg-amber-50 p-3 text-sm text-amber-900 dark:bg-amber-950/30 dark:text-amber-200">
+            {hist.error}
+          </div>
+        ) : null}
+
+        {histLoading ? (
+          <div className="text-sm text-zinc-600 dark:text-zinc-400">Loading chart…</div>
+        ) : chartData.length < 2 ? (
           <div className="text-sm text-zinc-600 dark:text-zinc-400">
-            Not enough data yet. Run sync a couple times to build history.
+            Not enough data yet. Sync Schwab a few times, then run{" "}
+            <code className="rounded bg-zinc-100 px-1 dark:bg-white/10">npm run backfill:portfolio-snapshots</code>.
           </div>
         ) : (
-          <div className="h-80 w-full">
-            <ResponsiveContainer>
+          <div className="h-80 w-full min-w-0">
+            <ResponsiveContainer
+              width="100%"
+              height="100%"
+              minWidth={0}
+              minHeight={320}
+              initialDimension={{ width: 400, height: 320 }}
+            >
               <LineChart data={chartData}>
                 <CartesianGrid strokeDasharray="3 3" />
-                <XAxis dataKey="asOfLabel" tick={false} />
+                <XAxis
+                  type="number"
+                  dataKey="xMs"
+                  domain={windowXDomain}
+                  tickFormatter={(ms) =>
+                    new Date(Number(ms)).toLocaleDateString(undefined, { month: "short", day: "numeric" })
+                  }
+                  tick={{ fontSize: 10 }}
+                  stroke="rgba(113,113,122,0.5)"
+                />
                 <YAxis tickFormatter={(v) => `${Number(v).toFixed(0)}%`} />
                 <ReferenceLine y={0} stroke="rgba(113,113,122,0.6)" />
                 <Tooltip
-                  formatter={(v) => `${Number(v).toFixed(2)}%`}
-                  labelFormatter={(l) => String(l)}
+                  content={({ active, payload }) => {
+                    if (!active || !payload?.length) return null;
+                    const row = payload[0]?.payload as ChartRow;
+                    const mask = privacy.masked;
+                    return (
+                      <div className="rounded-lg border border-zinc-200 bg-white px-3 py-2 text-xs shadow-md dark:border-white/20 dark:bg-zinc-950">
+                        <div className="font-medium text-zinc-900 dark:text-zinc-100">{row.asOfLabel}</div>
+                        <div className="mt-1 space-y-0.5 text-zinc-700 dark:text-zinc-300">
+                          <div>Portfolio: {Number(row.portfolio).toFixed(2)}%</div>
+                          {row.raw_portfolio_value != null ? (
+                            <div>Value: {formatUsd2(row.raw_portfolio_value, { mask })}</div>
+                          ) : null}
+                          {row.SPY != null ? <div>SPY: {Number(row.SPY).toFixed(2)}%</div> : null}
+                          {row.spy_close != null ? <div>SPY close: {formatUsd2(row.spy_close, { mask })}</div> : null}
+                          {row.QQQ != null ? <div>QQQ: {Number(row.QQQ).toFixed(2)}%</div> : null}
+                          {row.qqq_close != null ? <div>QQQ close: {formatUsd2(row.qqq_close, { mask })}</div> : null}
+                        </div>
+                      </div>
+                    );
+                  }}
                 />
                 <Area
                   type="monotone"
@@ -373,8 +438,24 @@ export default function PerformancePage() {
                   isAnimationActive={false}
                 />
                 <Line type="monotone" dataKey="portfolio" name="Portfolio" strokeWidth={2} dot={false} stroke={COLORS.portfolio} />
-                <Line type="monotone" dataKey="SPY" name="SPY" strokeWidth={2} dot={false} stroke={COLORS.SPY} />
-                <Line type="monotone" dataKey="QQQ" name="QQQ" strokeWidth={2} dot={false} stroke={COLORS.QQQ} />
+                <Line
+                  type="monotone"
+                  dataKey="SPY"
+                  name="SPY"
+                  strokeWidth={2}
+                  dot={false}
+                  stroke={COLORS.SPY}
+                  connectNulls={false}
+                />
+                <Line
+                  type="monotone"
+                  dataKey="QQQ"
+                  name="QQQ"
+                  strokeWidth={2}
+                  dot={false}
+                  stroke={COLORS.QQQ}
+                  connectNulls={false}
+                />
               </LineChart>
             </ResponsiveContainer>
           </div>
@@ -383,4 +464,3 @@ export default function PerformancePage() {
     </div>
   );
 }
-

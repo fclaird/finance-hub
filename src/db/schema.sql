@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS accounts (
   connection_id TEXT NOT NULL REFERENCES institution_connections(id) ON DELETE CASCADE,
   name TEXT NOT NULL,
   nickname TEXT,
+  schwab_account_hash TEXT,
   type TEXT NOT NULL,
   currency TEXT NOT NULL DEFAULT 'USD',
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -137,6 +138,23 @@ CREATE TABLE IF NOT EXISTS account_value_points (
   PRIMARY KEY (account_id, as_of)
 );
 
+-- Weekly (or thinned monthly for old periods) portfolio totals + SPY/QQQ closes on the same calendar date.
+-- Buckets match Performance UI: combined | retirement | brokerage. Depth is limited by sync history (no broker NAV time machine).
+CREATE TABLE IF NOT EXISTS portfolio_snapshots (
+  id TEXT PRIMARY KEY,
+  snapshot_date TEXT NOT NULL, -- ISO YYYY-MM-DD (typically week-ending Friday)
+  bucket TEXT NOT NULL DEFAULT 'combined', -- 'combined' | 'retirement' | 'brokerage'
+  total_value REAL NOT NULL,
+  account_balances_json TEXT, -- optional JSON map of account_id -> value for debugging
+  spy_close REAL,
+  qqq_close REAL,
+  source TEXT NOT NULL, -- 'backfill_holdings' | 'weekly_job' | 'cron_weekly' | etc.
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(snapshot_date, bucket)
+);
+
+CREATE INDEX IF NOT EXISTS idx_portfolio_snapshots_date ON portfolio_snapshots(snapshot_date);
+
 -- Cached OHLCV candles for terminal visualizations + volume anomaly detection.
 -- interval: '1d' | '5m' etc. ts_ms: candle start time in epoch ms.
 CREATE TABLE IF NOT EXISTS ohlcv_points (
@@ -186,6 +204,51 @@ CREATE TABLE IF NOT EXISTS earnings_events (
 
 CREATE INDEX IF NOT EXISTS idx_earnings_events_date ON earnings_events(earnings_date);
 CREATE INDEX IF NOT EXISTS idx_earnings_events_symbol ON earnings_events(symbol);
+
+-- Terminal X digest cache (server-side; populated by cron or manual refresh).
+CREATE TABLE IF NOT EXISTS x_digest_cache (
+  id TEXT PRIMARY KEY,
+  generated_at TEXT NOT NULL,
+  payload_json TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS x_symbol_cache (
+  symbol TEXT PRIMARY KEY COLLATE NOCASE,
+  generated_at TEXT NOT NULL,
+  payload_json TEXT NOT NULL
+);
+
+-- Schwab (and future brokers) transaction history for strategy views.
+-- One row per API activity; `raw_json` holds full payload including all legs.
+CREATE TABLE IF NOT EXISTS broker_transactions (
+  id TEXT PRIMARY KEY,
+  account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  external_activity_id TEXT NOT NULL,
+  trade_date TEXT NOT NULL,
+  transaction_type TEXT,
+  description TEXT,
+  net_amount REAL,
+  raw_json TEXT NOT NULL,
+  symbol TEXT,
+  underlying_symbol TEXT,
+  asset_type TEXT,
+  instruction TEXT,
+  position_effect TEXT,
+  quantity REAL,
+  price REAL,
+  option_expiration TEXT,
+  option_right TEXT,
+  option_strike REAL,
+  leg_count INTEGER NOT NULL DEFAULT 1,
+  strategy_category TEXT,
+  classified_at TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(account_id, external_activity_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_broker_tx_account_date ON broker_transactions(account_id, trade_date);
+CREATE INDEX IF NOT EXISTS idx_broker_tx_category ON broker_transactions(strategy_category, trade_date);
 
 CREATE TABLE IF NOT EXISTS earnings_opp_metrics (
   id TEXT PRIMARY KEY,

@@ -3,6 +3,8 @@ import { cookies } from "next/headers";
 
 import { getDb } from "@/lib/db";
 import { DATA_MODE_COOKIE, parseDataMode } from "@/lib/dataMode";
+import { portfolioImpliedEquityPrice } from "@/lib/analytics/optionsExposure";
+import { normalizeOptionUnderlying } from "@/lib/options/optionUnderlying";
 import { notPosterityWhereSql } from "@/lib/posterity";
 
 function normSym(s: string) {
@@ -18,6 +20,9 @@ export async function GET(req: Request) {
   const mode = parseDataMode(jar.get(DATA_MODE_COOKIE)?.value);
 
   const db = getDb();
+  const impliedPrice =
+    underlying === "CASH" ? 1 : portfolioImpliedEquityPrice(db, mode, underlying);
+
   const where =
     mode === "schwab"
       ? `a.id LIKE 'schwab_%' AND ${notPosterityWhereSql("a")}`
@@ -37,25 +42,9 @@ export async function GET(req: Request) {
     )
     .all() as Array<{ snapshot_id: string }>;
   const snapshotIds = snaps.map((r) => r.snapshot_id);
-  if (snapshotIds.length === 0) return NextResponse.json({ ok: true, underlying, impliedPrice: null, contributors: [] });
-
-  // Implied price from non-option positions: mv/qty
-  const spot = db
-    .prepare(
-      `
-      SELECT SUM(p.quantity) AS qty, SUM(COALESCE(p.market_value, 0)) AS mv
-      FROM positions p
-      JOIN securities s ON s.id = p.security_id
-      WHERE p.snapshot_id IN (SELECT value FROM json_each(@snaps))
-        AND s.security_type != 'option'
-        AND UPPER(COALESCE(s.symbol, '')) = @sym
-    `,
-    )
-    .get({ snaps: JSON.stringify(snapshotIds), sym: underlying }) as { qty: number | null; mv: number | null } | undefined;
-
-  const qty = spot?.qty ?? 0;
-  const mv = spot?.mv ?? 0;
-  const impliedPrice = underlying === "CASH" ? 1 : qty ? mv / qty : null;
+  if (snapshotIds.length === 0) {
+    return NextResponse.json({ ok: true, underlying, impliedPrice, contributors: [] });
+  }
 
   const opts = db
     .prepare(
@@ -63,7 +52,7 @@ export async function GET(req: Request) {
       SELECT
         p.id AS positionId,
         s.symbol AS optionSymbol,
-        COALESCE(us.symbol, s.symbol, 'UNKNOWN') AS underlyingSymbol,
+        us.symbol AS usSymbol,
         p.quantity AS quantity,
         og.delta AS delta
       FROM positions p
@@ -72,18 +61,19 @@ export async function GET(req: Request) {
       LEFT JOIN option_greeks og ON og.position_id = p.id
       WHERE p.snapshot_id IN (SELECT value FROM json_each(@snaps))
         AND s.security_type = 'option'
-        AND UPPER(COALESCE(us.symbol, s.symbol, '')) = @sym
     `,
     )
-    .all({ snaps: JSON.stringify(snapshotIds), sym: underlying }) as Array<{
+    .all({ snaps: JSON.stringify(snapshotIds) }) as Array<{
     positionId: string;
     optionSymbol: string | null;
-    underlyingSymbol: string;
+    usSymbol: string | null;
     quantity: number;
     delta: number | null;
   }>;
 
-  const contributors = opts
+  const matched = opts.filter((r) => normalizeOptionUnderlying(r.usSymbol, r.optionSymbol) === underlying);
+
+  const allContributors = matched
     .map((r) => {
       const d = typeof r.delta === "number" && Number.isFinite(r.delta) ? r.delta : 0;
       const shares = r.quantity * 100 * d;
@@ -95,11 +85,11 @@ export async function GET(req: Request) {
       };
     })
     .filter((c) => c.optionSymbol)
-    .sort((a, b) => Math.abs(b.syntheticShares) - Math.abs(a.syntheticShares))
-    .slice(0, 12);
+    .sort((a, b) => Math.abs(b.syntheticShares) - Math.abs(a.syntheticShares));
 
-  const syntheticShares = contributors.reduce((s, c) => s + c.syntheticShares, 0);
+  const syntheticShares = allContributors.reduce((s, c) => s + c.syntheticShares, 0);
   const syntheticMarketValue = impliedPrice != null ? syntheticShares * impliedPrice : null;
+  const contributors = allContributors.slice(0, 12);
 
   return NextResponse.json({
     ok: true,
@@ -111,4 +101,3 @@ export async function GET(req: Request) {
     snapshots: snapshotIds.length,
   });
 }
-

@@ -1,8 +1,12 @@
+import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 
 import { getDb } from "@/lib/db";
 import { newId } from "@/lib/id";
 import { logError } from "@/lib/log";
+import { DATA_MODE_COOKIE, parseDataMode } from "@/lib/dataMode";
+import { ensureBenchmarkHistory } from "@/lib/market/benchmarks";
+import { upsertWeekEndingPortfolioSnapshots } from "@/lib/portfolio/snapshots";
 import { schwabFetch } from "@/lib/schwab/client";
 
 type SchwabAccountNumber = { accountNumber?: string; hashValue?: string };
@@ -262,6 +266,16 @@ export async function POST() {
   });
 
     tx();
+
+    try {
+      const jar = await cookies();
+      const mode = parseDataMode(jar.get(DATA_MODE_COOKIE)?.value);
+      await ensureBenchmarkHistory("SPY");
+      await ensureBenchmarkHistory("QQQ");
+      upsertWeekEndingPortfolioSnapshots(db, mode, "weekly_job");
+    } catch (e) {
+      logError("portfolio_snapshot_after_schwab_sync", e);
+    }
 
     return NextResponse.json({ ok: true, accounts: accounts.length });
   } catch (e) {

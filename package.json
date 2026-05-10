@@ -6,7 +6,10 @@
     "dev": "next dev --experimental-https",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "digest:pdf": "npx tsx scripts/pdf-allocation-report.ts",
+    "digest:notify": "npx tsx scripts/trigger-digest-notify.ts",
+    "backfill:portfolio-snapshots": "npx tsx scripts/backfill-portfolio-snapshots.ts"
   },
   "dependencies": {
     "better-sqlite3": "^12.9.0",

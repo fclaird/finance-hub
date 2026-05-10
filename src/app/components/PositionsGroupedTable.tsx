@@ -1,7 +1,9 @@
 "use client";
 
 import { Fragment } from "react";
-import { formatInt, formatUsd2 } from "@/lib/format";
+import { formatInt, formatNum, formatUsd2 } from "@/lib/format";
+import { formatOptionSymbolDisplay } from "@/lib/formatOptionDisplay";
+import { posNegClass } from "@/lib/terminal/colors";
 
 export type Row = {
   positionId: string;
@@ -13,6 +15,7 @@ export type Row = {
   securityName: string;
   securityType: string;
   underlyingSymbol: string | null;
+  effectiveUnderlyingSymbol?: string | null;
   optionExpiration: string | null;
   optionRight: "C" | "P" | null;
   optionStrike: number | null;
@@ -40,23 +43,7 @@ function n0(v: number | null | undefined) {
 }
 
 function formatOptionSymbol(r: Row) {
-  const u = r.underlyingSymbol ?? r.symbol;
-  const exp = r.optionExpiration ? formatExpiry(r.optionExpiration) : "?";
-  const right = r.optionRight ?? "?";
-  const strike = r.optionStrike == null ? "?" : r.optionStrike % 1 === 0 ? String(r.optionStrike) : r.optionStrike.toFixed(2);
-  return `${u} ${exp} ${right} ${strike}`;
-}
-
-function formatExpiry(iso: string) {
-  // iso: YYYY-MM-DD -> "DD MMM YY"
-  const m = iso.match(/^(\d{4})-(\d{2})-(\d{2})$/);
-  if (!m) return iso;
-  const yy = m[1]!.slice(2);
-  const mm = Number(m[2]!);
-  const dd = m[3]!;
-  const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-  const mon = months[mm - 1] ?? "???";
-  return `${dd} ${mon} ${yy}`;
+  return formatOptionSymbolDisplay(r);
 }
 
 export type SortColumn =
@@ -163,18 +150,27 @@ export function GroupedTable({
     <div className="mt-4 overflow-x-auto pb-2">
       <table className="w-max min-w-[1600px] border-collapse text-sm">
         <thead>
-          <tr className="border-b border-zinc-300 bg-zinc-50 text-left text-zinc-600 dark:border-white/20 dark:bg-zinc-900/40 dark:text-zinc-400">
-            {showAccountCol ? <th className="whitespace-nowrap py-2 pr-6 font-medium">Account</th> : null}
-            <SortTh col="symbol" label="Symbol" sortColumn={sortColumn} sortAsc={sortAsc} onToggle={toggleSort} />
-            <SortTh col="quantity" label="Qty" sortColumn={sortColumn} sortAsc={sortAsc} onToggle={toggleSort} />
-            <SortTh col="price" label="Price" sortColumn={sortColumn} sortAsc={sortAsc} onToggle={toggleSort} />
-            <SortTh col="marketValue" label={"Market\u00A0value"} sortColumn={sortColumn} sortAsc={sortAsc} onToggle={toggleSort} />
-            <SortTh col="delta" label="Delta" sortColumn={sortColumn} sortAsc={sortAsc} onToggle={toggleSort} />
-            <SortTh col="gamma" label="Gamma" sortColumn={sortColumn} sortAsc={sortAsc} onToggle={toggleSort} />
-            <SortTh col="theta" label="Theta" sortColumn={sortColumn} sortAsc={sortAsc} onToggle={toggleSort} />
-            <SortTh col="dte" label="DTE" sortColumn={sortColumn} sortAsc={sortAsc} onToggle={toggleSort} />
-            <SortTh col="intrinsic" label="Intrinsic" sortColumn={sortColumn} sortAsc={sortAsc} onToggle={toggleSort} />
-            <SortTh col="extrinsic" label="Extrinsic" sortColumn={sortColumn} sortAsc={sortAsc} onToggle={toggleSort} />
+          <tr className="border-b border-zinc-300 bg-zinc-50 text-zinc-600 dark:border-white/20 dark:bg-zinc-900/40 dark:text-zinc-400">
+            {showAccountCol ? (
+              <th className="whitespace-nowrap py-2 pr-6 text-left font-medium">Account</th>
+            ) : null}
+            <SortTh col="symbol" label="Symbol" sortColumn={sortColumn} sortAsc={sortAsc} onToggle={toggleSort} align="left" />
+            <SortTh col="quantity" label="Qty" sortColumn={sortColumn} sortAsc={sortAsc} onToggle={toggleSort} align="right" />
+            <SortTh col="price" label="Price" sortColumn={sortColumn} sortAsc={sortAsc} onToggle={toggleSort} align="right" />
+            <SortTh
+              col="marketValue"
+              label={"Market\u00A0value"}
+              sortColumn={sortColumn}
+              sortAsc={sortAsc}
+              onToggle={toggleSort}
+              align="right"
+            />
+            <SortTh col="delta" label="Delta" sortColumn={sortColumn} sortAsc={sortAsc} onToggle={toggleSort} align="right" />
+            <SortTh col="gamma" label="Gamma" sortColumn={sortColumn} sortAsc={sortAsc} onToggle={toggleSort} align="right" />
+            <SortTh col="theta" label="Theta" sortColumn={sortColumn} sortAsc={sortAsc} onToggle={toggleSort} align="right" />
+            <SortTh col="dte" label="DTE" sortColumn={sortColumn} sortAsc={sortAsc} onToggle={toggleSort} align="right" />
+            <SortTh col="intrinsic" label="Intrinsic" sortColumn={sortColumn} sortAsc={sortAsc} onToggle={toggleSort} align="right" />
+            <SortTh col="extrinsic" label="Extrinsic" sortColumn={sortColumn} sortAsc={sortAsc} onToggle={toggleSort} align="right" />
           </tr>
         </thead>
         <tbody>
@@ -197,7 +193,11 @@ export function GroupedTable({
                   </td>
                   <td className="whitespace-nowrap py-2 pr-6 text-right tabular-nums text-zinc-500 dark:text-zinc-400">—</td>
                   <td className="whitespace-nowrap py-2 pr-6 text-right tabular-nums text-zinc-500 dark:text-zinc-400">—</td>
-                  <td className="whitespace-nowrap py-2 pr-6 text-right tabular-nums font-semibold">
+                  <td
+                    className={
+                      "whitespace-nowrap py-2 pr-6 text-right tabular-nums font-semibold " + posNegClass(g.netMarketValue)
+                    }
+                  >
                     {usd2Masked(g.netMarketValue, privacyMasked)}
                   </td>
                   <td className="whitespace-nowrap py-2 pr-6 text-right tabular-nums text-zinc-500 dark:text-zinc-400">—</td>
@@ -226,15 +226,36 @@ export function GroupedTable({
                             <span className="pl-6">{r.symbol}</span>
                           )}
                         </td>
-                        <td className="whitespace-nowrap py-2 pr-6 text-right tabular-nums">{formatInt(r.quantity)}</td>
-                        <td className="whitespace-nowrap py-2 pr-6 text-right tabular-nums">{r.price == null ? "-" : usd2Unmasked(r.price)}</td>
-                        <td className="whitespace-nowrap py-2 pr-6 text-right tabular-nums">{r.marketValue == null ? "-" : usd2Masked(r.marketValue, privacyMasked)}</td>
-                        <td className="whitespace-nowrap py-2 pr-6 text-right tabular-nums">{r.delta == null ? "-" : r.delta.toFixed(3)}</td>
-                        <td className="whitespace-nowrap py-2 pr-6 text-right tabular-nums">{r.gamma == null ? "-" : r.gamma.toFixed(4)}</td>
-                        <td className="whitespace-nowrap py-2 pr-6 text-right tabular-nums">{r.theta == null ? "-" : r.theta.toFixed(3)}</td>
+                        <td className={"whitespace-nowrap py-2 pr-6 text-right tabular-nums " + posNegClass(r.quantity)}>
+                          {formatInt(r.quantity)}
+                        </td>
+                        <td className="whitespace-nowrap py-2 pr-6 text-right tabular-nums">
+                          {r.price == null ? "-" : usd2Unmasked(r.price)}
+                        </td>
+                        <td
+                          className={
+                            "whitespace-nowrap py-2 pr-6 text-right tabular-nums " +
+                            (r.marketValue == null ? "" : posNegClass(r.marketValue))
+                          }
+                        >
+                          {r.marketValue == null ? "-" : usd2Masked(r.marketValue, privacyMasked)}
+                        </td>
+                        <td className={"whitespace-nowrap py-2 pr-6 text-right tabular-nums " + posNegClass(r.delta)}>
+                          {r.delta == null ? "-" : formatNum(r.delta, 3)}
+                        </td>
+                        <td className={"whitespace-nowrap py-2 pr-6 text-right tabular-nums " + posNegClass(r.gamma)}>
+                          {r.gamma == null ? "-" : formatNum(r.gamma, 4)}
+                        </td>
+                        <td className={"whitespace-nowrap py-2 pr-6 text-right tabular-nums " + posNegClass(r.theta)}>
+                          {r.theta == null ? "-" : formatNum(r.theta, 3)}
+                        </td>
                         <td className="whitespace-nowrap py-2 pr-6 text-right tabular-nums">{r.dte == null ? "-" : formatInt(r.dte)}</td>
-                        <td className="whitespace-nowrap py-2 pr-6 text-right tabular-nums">{r.intrinsic == null ? "-" : usd2Unmasked(r.intrinsic)}</td>
-                        <td className="whitespace-nowrap py-2 pr-6 text-right tabular-nums">{r.extrinsic == null ? "-" : usd2Unmasked(r.extrinsic)}</td>
+                        <td className={"whitespace-nowrap py-2 pr-6 text-right tabular-nums " + posNegClass(r.intrinsic)}>
+                          {r.intrinsic == null ? "-" : usd2Unmasked(r.intrinsic)}
+                        </td>
+                        <td className={"whitespace-nowrap py-2 pr-6 text-right tabular-nums " + posNegClass(r.extrinsic)}>
+                          {r.extrinsic == null ? "-" : usd2Unmasked(r.extrinsic)}
+                        </td>
                       </tr>
                     ))}
               </Fragment>
@@ -248,7 +269,8 @@ export function GroupedTable({
 
 function underlyingKey(r: Row): string {
   const sym = (r.symbol ?? "").trim();
-  if (r.securityType === "option") return (r.underlyingSymbol ?? sym).trim() || sym;
+  if (r.securityType === "option")
+    return (r.effectiveUnderlyingSymbol ?? r.underlyingSymbol ?? sym).trim() || sym;
   return sym;
 }
 
@@ -370,18 +392,21 @@ function SortTh({
   sortColumn,
   sortAsc,
   onToggle,
+  align = "right",
 }: {
   col: SortColumn;
   label: string;
   sortColumn: SortColumn;
   sortAsc: boolean;
   onToggle: (col: SortColumn) => void;
+  align?: "left" | "right";
 }) {
   const active = sortColumn === col;
+  const thAlign = align === "right" ? "text-right" : "text-left";
   return (
     <th
       scope="col"
-      className="whitespace-nowrap py-2 pr-6 font-medium"
+      className={"whitespace-nowrap py-2 pr-6 font-medium " + thAlign}
       aria-sort={active ? (sortAsc ? "ascending" : "descending") : "none"}
     >
       <button
@@ -389,7 +414,8 @@ function SortTh({
         onClick={() => onToggle(col)}
         title={active ? `Sorted ${sortAsc ? "ascending" : "descending"}` : `Sort by ${label}`}
         className={
-          "-mx-1 inline-flex max-w-full items-center gap-1 rounded px-1 py-0.5 text-left font-medium text-zinc-600 hover:bg-zinc-100 hover:text-zinc-900 dark:text-zinc-400 dark:hover:bg-white/10 dark:hover:text-zinc-100"
+          "-mx-1 inline-flex w-full max-w-full items-center gap-1 rounded px-1 py-0.5 font-medium text-zinc-600 hover:bg-zinc-100 hover:text-zinc-900 dark:text-zinc-400 dark:hover:bg-white/10 dark:hover:text-zinc-100 " +
+          (align === "right" ? "justify-end" : "justify-start")
         }
       >
         <span>{label}</span>

@@ -68,7 +68,7 @@ export default function DividendsPage() {
   );
 
   return (
-    <div className="mx-auto flex w-full max-w-6xl flex-1 flex-col gap-6 px-6 py-8">
+    <div className="flex w-full max-w-6xl flex-1 flex-col gap-6 py-8 pl-4 pr-6">
       <div>
         <h1 className="text-2xl font-semibold tracking-tight">Dividends</h1>
         <p className="mt-2 text-sm leading-6 text-zinc-600 dark:text-zinc-400">
@@ -93,8 +93,14 @@ export default function DividendsPage() {
         <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
           Actual dividends vs projected, rolled up by pay month.
         </p>
-        <div className="mt-4 h-80 w-full">
-          <ResponsiveContainer>
+        <div className="mt-4 h-80 w-full min-w-0">
+          <ResponsiveContainer
+            width="100%"
+            height="100%"
+            minWidth={0}
+            minHeight={320}
+            initialDimension={{ width: 400, height: 320 }}
+          >
             <ComposedChart data={chart}>
               <CartesianGrid strokeDasharray="3 3" />
               <XAxis dataKey="label" tick={false} />

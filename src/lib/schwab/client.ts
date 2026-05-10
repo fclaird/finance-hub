@@ -34,6 +34,46 @@ async function getValidToken(): Promise<SchwabToken> {
   return next;
 }
 
+/** Calendar YYYY-MM-DD in America/New_York for an instant (fallback when HTTP Date is missing). */
+function nyIsoFromInstant(ms: number): string {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/New_York",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(new Date(ms));
+  const y = parts.find((p) => p.type === "year")?.value;
+  const m = parts.find((p) => p.type === "month")?.value;
+  const d = parts.find((p) => p.type === "day")?.value;
+  if (!y || !m || !d) return new Date(ms).toISOString().slice(0, 10);
+  return `${y}-${m}-${d}`;
+}
+
+function nyIsoFromHttpDateHeader(header: string | null): string | null {
+  if (!header) return null;
+  const ms = Date.parse(header);
+  if (Number.isNaN(ms)) return null;
+  return nyIsoFromInstant(ms);
+}
+
+/**
+ * Schwab validates transaction windows against broker time, not the client clock.
+ * Use the Trader API response `Date` header (converted to NY calendar) so skewed laptops don't send "future" dates.
+ */
+export async function getSchwabTraderCalendarCapIso(): Promise<string> {
+  const token = await getValidToken();
+  const url = joinBaseAndPath(SCHWAB_TRADER_API_BASE, "accounts/accountNumbers");
+  const resp = await fetch(url, {
+    headers: {
+      Authorization: `Bearer ${token.access_token}`,
+      Accept: "application/json",
+    },
+  });
+  const fromHeader = nyIsoFromHttpDateHeader(resp.headers.get("date"));
+  if (fromHeader) return fromHeader;
+  return nyIsoFromInstant(Date.now());
+}
+
 export async function schwabFetch<T>(
   path: string,
   init?: RequestInit,

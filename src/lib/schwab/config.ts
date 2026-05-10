@@ -21,3 +21,15 @@ export const SCHWAB_OAUTH_TOKEN_URL = "https://api.schwabapi.com/v1/oauth/token"
 export const SCHWAB_TRADER_API_BASE = "https://api.schwabapi.com/trader/v1";
 export const SCHWAB_MARKETDATA_API_BASE = "https://api.schwabapi.com/marketdata/v1";
 
+/** Schwab documents a ~60-day max span per transactions request; chunk slightly under that. */
+export const SCHWAB_TRANSACTION_CHUNK_DAYS = 59;
+
+/**
+ * Default calendar depth for TRADE history sync. Schwab returns empty for unavailable periods;
+ * we chunk backward until this many days are covered (many API calls: ceil(days / chunk) per account).
+ */
+export const DEFAULT_TRANSACTION_LOOKBACK_DAYS = 5000;
+
+/** Hard cap for optional `lookbackDays` on POST /api/schwab/transactions/sync. */
+export const MAX_TRANSACTION_LOOKBACK_DAYS = 10_000;
+

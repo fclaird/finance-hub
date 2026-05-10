@@ -197,7 +197,7 @@ export default function DiversificationPage() {
   const scopeTitle = pieView === "net" ? "Net" : pieView === "brokerage" ? "Brokerage" : "Retirement";
 
   return (
-    <div className="mx-auto flex w-full max-w-6xl flex-1 flex-col gap-6 px-6 py-8">
+    <div className="flex w-full max-w-6xl flex-1 flex-col gap-6 py-8 pl-4 pr-6">
       <div className="flex items-start justify-between gap-4">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Diversification</h1>
@@ -243,58 +243,6 @@ export default function DiversificationPage() {
           ))}
         </div>
 
-        <div className="mt-6 overflow-hidden rounded-xl ring-1 ring-zinc-300 dark:ring-white/20">
-          <div className="flex items-center justify-between gap-4 border-b border-zinc-300 bg-zinc-50 px-4 py-3 dark:border-white/20 dark:bg-zinc-900/40">
-            <h3 className="m-0 min-w-0 shrink text-base font-semibold">Accounts</h3>
-            <div className="grid w-max max-w-full grid-cols-3 gap-1.5 sm:min-w-[15.75rem]">
-              {(
-                [
-                  { key: "net", label: "Net" },
-                  { key: "brokerage", label: "Brokerage" },
-                  { key: "retirement", label: "Retirement" },
-                ] as const
-              ).map((v) => (
-                <button
-                  key={v.key}
-                  type="button"
-                  onClick={() => setPieView(v.key)}
-                  className={
-                    BTN_CLASSES +
-                    " min-w-[5rem] shadow-sm " +
-                    (pieView === v.key
-                      ? "bg-zinc-900 text-white shadow dark:bg-white dark:text-zinc-900"
-                      : "border border-zinc-300 bg-white text-zinc-900 hover:bg-zinc-50 dark:border-white/20 dark:bg-zinc-950 dark:text-zinc-100 dark:hover:bg-zinc-900")
-                  }
-                >
-                  {v.label}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <div className="flex items-center justify-between gap-4 bg-white px-4 py-3 dark:bg-zinc-950/60">
-            <h3 className="m-0 min-w-0 shrink text-base font-semibold">Pie weights</h3>
-            <div className="grid w-max max-w-full grid-cols-3 gap-1.5 sm:min-w-[15.75rem]">
-              {(["net", "spot", "synthetic"] as const).map((m) => (
-                <button
-                  key={m}
-                  type="button"
-                  onClick={() => setPieMetric(m)}
-                  className={
-                    BTN_CLASSES +
-                    " min-w-[5rem] shadow-sm " +
-                    (pieMetric === m
-                      ? "bg-zinc-900 text-white shadow dark:bg-white dark:text-zinc-900"
-                      : "border border-zinc-300 bg-white text-zinc-900 hover:bg-zinc-50 dark:border-white/20 dark:bg-zinc-950 dark:text-zinc-100 dark:hover:bg-zinc-900")
-                  }
-                >
-                  {PIE_METRIC_LABEL[m]}
-                </button>
-              ))}
-            </div>
-          </div>
-        </div>
-
         {error ? (
           <div className="mt-4 rounded-xl bg-red-50 p-3 text-sm text-red-900 dark:bg-red-950/30 dark:text-red-200">
             {error}
@@ -319,7 +267,61 @@ export default function DiversificationPage() {
           />
         </div>
 
-        <div className="mt-6 overflow-hidden rounded-lg border border-zinc-300 dark:border-white/20">
+        <div className="mt-6 flex flex-wrap items-center justify-between gap-4 border-b border-zinc-200 pb-4 dark:border-white/15">
+          <div className="flex flex-wrap items-center gap-3">
+            <div className="text-sm font-semibold text-zinc-700 dark:text-zinc-300">Scope</div>
+            <div className="grid w-max max-w-full grid-cols-3 gap-1.5 sm:min-w-[15.75rem]">
+              {(
+                [
+                  { key: "net", label: "Net" },
+                  { key: "brokerage", label: "Brokerage" },
+                  { key: "retirement", label: "Retirement" },
+                ] as const
+              ).map((v) => (
+                <button
+                  key={v.key}
+                  type="button"
+                  onClick={() => setPieView(v.key)}
+                  className={
+                    BTN_CLASSES +
+                    " min-w-[5rem] shadow-sm " +
+                    (pieView === v.key
+                      ? "bg-zinc-900 text-white shadow dark:bg-white dark:text-zinc-900"
+                      : "border border-zinc-300 bg-white text-zinc-900 hover:bg-zinc-50 dark:border-white/20 dark:bg-zinc-950 dark:text-zinc-100 dark:hover:bg-zinc-900")
+                  }
+                >
+                  {v.label}
+                </button>
+              ))}
+            </div>
+
+            <div className="ml-2 text-sm font-semibold text-zinc-700 dark:text-zinc-300">Weights</div>
+            <div className="grid w-max max-w-full grid-cols-3 gap-1.5 sm:min-w-[15.75rem]">
+              {(["net", "spot", "synthetic"] as const).map((m) => (
+                <button
+                  key={m}
+                  type="button"
+                  onClick={() => setPieMetric(m)}
+                  className={
+                    BTN_CLASSES +
+                    " min-w-[5rem] shadow-sm " +
+                    (pieMetric === m
+                      ? "bg-zinc-900 text-white shadow dark:bg-white dark:text-zinc-900"
+                      : "border border-zinc-300 bg-white text-zinc-900 hover:bg-zinc-50 dark:border-white/20 dark:bg-zinc-950 dark:text-zinc-100 dark:hover:bg-zinc-900")
+                  }
+                >
+                  {PIE_METRIC_LABEL[m]}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="text-sm font-semibold text-zinc-700 dark:text-zinc-300">
+            {scopeTitle} · {PIE_METRIC_LABEL[pieMetric]}
+          </div>
+        </div>
+
+        <div className="mt-4 overflow-hidden rounded-lg border border-zinc-300 dark:border-white/20">
           <table className="w-full border-collapse text-sm">
             <thead>
               <tr className="border-b border-zinc-300 text-left text-zinc-600 dark:border-white/20 dark:text-zinc-400">

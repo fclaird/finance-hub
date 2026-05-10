@@ -54,7 +54,7 @@ export default function TerminalWatchlistsPage() {
   const active = useMemo(() => watchlists.find((w) => w.id === activeId) ?? null, [watchlists, activeId]);
 
   return (
-    <div className="mx-auto flex w-full max-w-6xl flex-1 flex-col gap-6 px-6 py-8">
+    <div className="flex w-full max-w-6xl flex-1 flex-col gap-6 py-8 pl-4 pr-6">
       <div className="flex items-start justify-between gap-4">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Terminal watchlists</h1>

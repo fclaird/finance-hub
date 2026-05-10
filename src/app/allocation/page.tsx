@@ -8,6 +8,7 @@ import { FinancePiePanel } from "@/app/components/FinancePiePanel";
 import { useEquityMarketPolling } from "@/hooks/useEquityMarketPolling";
 import { usePrivacy } from "@/app/components/PrivacyProvider";
 import { formatUsd2 } from "@/lib/format";
+import { posNegClass } from "@/lib/terminal/colors";
 
 type ExposureRow = {
   underlyingSymbol: string;
@@ -49,10 +50,6 @@ const PCT2 = new Intl.NumberFormat(undefined, { minimumFractionDigits: 2, maximu
 
 function usd2Masked(v: number, masked: boolean) {
   return formatUsd2(v, { mask: masked });
-}
-
-function negClass(v: number) {
-  return v < 0 ? "text-red-600 dark:text-red-400" : "";
 }
 
 function SortTh<T extends string>({
@@ -162,14 +159,14 @@ function AccountAssetClassTable({
         {rows.length ? (
           <tr className="border-b border-zinc-200 bg-zinc-50/60 font-semibold text-zinc-900 dark:border-white/20 dark:bg-white/5 dark:text-zinc-100">
             <td className="py-2 pr-4">TOTAL</td>
-            <td className="py-2 pr-4 text-right tabular-nums">{usd2Masked(totalMv, masked)}</td>
+            <td className={"py-2 pr-4 text-right tabular-nums " + posNegClass(totalMv)}>{usd2Masked(totalMv, masked)}</td>
             <td className="py-2 pr-4 text-right tabular-nums">100.00%</td>
           </tr>
         ) : null}
         {sorted.map((b) => (
           <tr key={b.key} className="border-b border-zinc-200 dark:border-white/20">
             <td className="py-2 pr-4 font-medium">{b.key}</td>
-            <td className={"py-2 pr-4 text-right tabular-nums " + negClass(b.marketValue)}>{usd2Masked(b.marketValue, masked)}</td>
+            <td className={"py-2 pr-4 text-right tabular-nums " + posNegClass(b.marketValue)}>{usd2Masked(b.marketValue, masked)}</td>
             <td className="py-2 pr-4 text-right tabular-nums">{PCT2.format(b.weight * 100)}%</td>
           </tr>
         ))}
@@ -434,7 +431,7 @@ export default function AllocationPage() {
   }
 
   return (
-    <div className="mx-auto flex w-full max-w-6xl flex-1 flex-col gap-6 px-6 py-8">
+    <div className="flex w-full min-w-0 max-w-6xl flex-1 flex-col gap-6 py-6 pl-3 pr-4 sm:py-8 sm:pl-4 sm:pr-6">
       <div className="flex items-start justify-between gap-4">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Allocation</h1>
@@ -457,58 +454,6 @@ export default function AllocationPage() {
       </div>
 
       <section className="rounded-2xl border border-zinc-300 bg-white p-6 shadow-sm dark:border-white/20 dark:bg-zinc-950">
-        <div className="flex flex-wrap items-center justify-between gap-4">
-          <div className="flex flex-wrap items-center gap-3">
-            <div className="text-sm font-semibold text-zinc-700 dark:text-zinc-300">Scope</div>
-            <div className="grid w-max max-w-full grid-cols-3 gap-1.5">
-              {([
-                { key: "net", label: "All" },
-                { key: "brokerage", label: "Brokerage" },
-                { key: "retirement", label: "Retirement" },
-              ] as const).map((v) => (
-                <button
-                  key={v.key}
-                  type="button"
-                  onClick={() => setPieView(v.key)}
-                  className={
-                    BTN_CLASSES +
-                    " min-w-[6rem] shadow-sm " +
-                    (pieView === v.key
-                      ? "bg-zinc-900 text-white shadow dark:bg-white dark:text-zinc-900"
-                      : "border border-zinc-300 bg-white text-zinc-900 hover:bg-zinc-50 dark:border-white/20 dark:bg-zinc-950 dark:text-zinc-100 dark:hover:bg-zinc-900")
-                  }
-                >
-                  {v.label}
-                </button>
-              ))}
-            </div>
-
-            <div className="ml-2 text-sm font-semibold text-zinc-700 dark:text-zinc-300">Weights</div>
-            <div className="grid w-max max-w-full grid-cols-3 gap-1.5">
-              {(["net", "spot", "synthetic"] as const).map((m) => (
-                <button
-                  key={m}
-                  type="button"
-                  onClick={() => setPieMetric(m)}
-                  className={
-                    BTN_CLASSES +
-                    " min-w-[6rem] shadow-sm " +
-                    (pieMetric === m
-                      ? "bg-zinc-900 text-white shadow dark:bg-white dark:text-zinc-900"
-                      : "border border-zinc-300 bg-white text-zinc-900 hover:bg-zinc-50 dark:border-white/20 dark:bg-zinc-950 dark:text-zinc-100 dark:hover:bg-zinc-900")
-                  }
-                >
-                  {PIE_METRIC_LABEL[m]}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <div className="text-sm font-semibold text-zinc-700 dark:text-zinc-300">
-            {pieView === "net" ? "All" : pieView === "brokerage" ? "Brokerage" : "Retirement"} · {PIE_METRIC_LABEL[pieMetric]}
-          </div>
-        </div>
-
         {error ? (
           <div className="mt-4 rounded-xl bg-red-50 p-3 text-sm text-red-900 dark:bg-red-950/30 dark:text-red-200">
             {error}
@@ -602,11 +547,11 @@ export default function AllocationPage() {
                 return (
                   <tr key={r.underlyingSymbol} className="border-b border-zinc-200 dark:border-white/20">
                     <td className="py-2 pr-4 font-medium">{r.underlyingSymbol}</td>
-                      <td className={"py-2 pr-4 text-right tabular-nums " + negClass(r.spotMarketValue)}>
+                      <td className={"py-2 pr-4 text-right tabular-nums " + posNegClass(r.spotMarketValue)}>
                         {usd2Masked(r.spotMarketValue, privacy.masked)}
                       </td>
                       <td
-                        className={"py-2 pr-4 text-right tabular-nums " + negClass(r.syntheticMarketValue)}
+                        className={"py-2 pr-4 text-right tabular-nums " + posNegClass(r.syntheticMarketValue)}
                         onMouseEnter={() => void ensureDetail(r.underlyingSymbol)}
                         title={(() => {
                           const d = detail.get(r.underlyingSymbol.trim().toUpperCase());
@@ -619,6 +564,7 @@ export default function AllocationPage() {
                             `syntheticShares = Σ(positionQty × 100 × delta) = ${sharesStr}`,
                             `impliedPrice = ${pxStr}`,
                             `syntheticMV = syntheticShares × impliedPrice`,
+                            `(implied price is portfolio-wide VWAP from non-option shares, same as the breakdown API.)`,
                             ``,
                             `Top contributors:`,
                             ...d.contributors.slice(0, 8).map((c) => {
@@ -632,13 +578,20 @@ export default function AllocationPage() {
                         {usd2Masked(r.syntheticMarketValue, privacy.masked)}
                       </td>
                     <td className="py-2 pr-4 text-right tabular-nums font-medium text-zinc-900 dark:text-zinc-100">
-                        <span className={negClass(netMv)}>{usd2Masked(netMv, privacy.masked)}</span>
+                        <span className={posNegClass(netMv)}>{usd2Masked(netMv, privacy.masked)}</span>
                     </td>
-                      <td className={"py-2 pr-4 text-right tabular-nums " + negClass(r.syntheticShares)}>
-                        {(Number.isFinite(r.syntheticShares) ? r.syntheticShares : 0).toFixed(2)}
+                      <td className={"py-2 pr-4 text-right tabular-nums " + posNegClass(r.syntheticShares)}>
+                        {(Number.isFinite(r.syntheticShares) ? r.syntheticShares : 0).toLocaleString(undefined, {
+                          minimumFractionDigits: 2,
+                          maximumFractionDigits: 2,
+                        })}
                       </td>
-                      <td className={"py-2 pr-4 text-right tabular-nums " + negClass(r.heldShares ?? 0)}>{(r.heldShares ?? 0).toFixed(2)}</td>
-                      <td className={"py-2 pr-4 text-right tabular-nums " + negClass(netShares(r))}>{netShares(r).toFixed(2)}</td>
+                      <td className={"py-2 pr-4 text-right tabular-nums " + posNegClass(r.heldShares ?? 0)}>
+                        {(r.heldShares ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </td>
+                      <td className={"py-2 pr-4 text-right tabular-nums " + posNegClass(netShares(r))}>
+                        {netShares(r).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </td>
                     <td className="py-2 pr-4 text-right tabular-nums">{PCT2.format(pct * 100)}%</td>
                   </tr>
                 );
@@ -646,16 +599,62 @@ export default function AllocationPage() {
               {rows.length ? (
                 <tr className="border-t border-zinc-300 bg-zinc-50/60 font-semibold text-zinc-900 dark:border-white/20 dark:bg-white/5 dark:text-zinc-100">
                   <td className="py-2 pr-4">TOTAL</td>
-                  <td className="py-2 pr-4 text-right tabular-nums">{usd2Masked(scopedRows.reduce((s, r) => s + r.spotMarketValue, 0), privacy.masked)}</td>
-                  <td className="py-2 pr-4 text-right tabular-nums">{usd2Masked(scopedRows.reduce((s, r) => s + r.syntheticMarketValue, 0), privacy.masked)}</td>
-                  <td className="py-2 pr-4 text-right tabular-nums">{usd2Masked(scopedRows.reduce((s, r) => s + r.spotMarketValue + r.syntheticMarketValue, 0), privacy.masked)}</td>
-                  <td className="py-2 pr-4 text-right tabular-nums">
+                  <td
+                    className={
+                      "py-2 pr-4 text-right tabular-nums " +
+                      posNegClass(scopedRows.reduce((s, r) => s + r.spotMarketValue, 0))
+                    }
+                  >
+                    {usd2Masked(scopedRows.reduce((s, r) => s + r.spotMarketValue, 0), privacy.masked)}
+                  </td>
+                  <td
+                    className={
+                      "py-2 pr-4 text-right tabular-nums " +
+                      posNegClass(scopedRows.reduce((s, r) => s + r.syntheticMarketValue, 0))
+                    }
+                  >
+                    {usd2Masked(scopedRows.reduce((s, r) => s + r.syntheticMarketValue, 0), privacy.masked)}
+                  </td>
+                  <td
+                    className={
+                      "py-2 pr-4 text-right tabular-nums " +
+                      posNegClass(scopedRows.reduce((s, r) => s + r.spotMarketValue + r.syntheticMarketValue, 0))
+                    }
+                  >
+                    {usd2Masked(scopedRows.reduce((s, r) => s + r.spotMarketValue + r.syntheticMarketValue, 0), privacy.masked)}
+                  </td>
+                  <td
+                    className={
+                      "py-2 pr-4 text-right tabular-nums " +
+                      posNegClass(scopedRows.reduce((s, r) => s + (Number.isFinite(r.syntheticShares) ? r.syntheticShares : 0), 0))
+                    }
+                  >
                     {scopedRows
                       .reduce((s, r) => s + (Number.isFinite(r.syntheticShares) ? r.syntheticShares : 0), 0)
-                      .toFixed(2)}
+                      .toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                   </td>
-                  <td className="py-2 pr-4 text-right tabular-nums">{scopedRows.reduce((s, r) => s + (r.heldShares ?? 0), 0).toFixed(2)}</td>
-                  <td className="py-2 pr-4 text-right tabular-nums">{scopedRows.reduce((s, r) => s + (r.heldShares ?? 0) + (r.syntheticShares ?? 0), 0).toFixed(2)}</td>
+                  <td
+                    className={
+                      "py-2 pr-4 text-right tabular-nums " +
+                      posNegClass(scopedRows.reduce((s, r) => s + (r.heldShares ?? 0), 0))
+                    }
+                  >
+                    {scopedRows
+                      .reduce((s, r) => s + (r.heldShares ?? 0), 0)
+                      .toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  </td>
+                  <td
+                    className={
+                      "py-2 pr-4 text-right tabular-nums " +
+                      posNegClass(
+                        scopedRows.reduce((s, r) => s + (r.heldShares ?? 0) + (r.syntheticShares ?? 0), 0),
+                      )
+                    }
+                  >
+                    {scopedRows
+                      .reduce((s, r) => s + (r.heldShares ?? 0) + (r.syntheticShares ?? 0), 0)
+                      .toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  </td>
                   <td className="py-2 pr-4 text-right tabular-nums">100.00%</td>
                 </tr>
               ) : null}
@@ -674,8 +673,60 @@ export default function AllocationPage() {
       <section className="rounded-2xl border border-zinc-300 bg-white p-6 shadow-sm dark:border-white/20 dark:bg-zinc-950">
         <h2 className="text-base font-semibold">Weighting (pie chart)</h2>
         <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
-          Color-coded by symbol. Uses the same scope + weights selections as the table above.
+          Color-coded by symbol. Scope and weights apply to the exposure table above and this chart.
         </p>
+
+        <div className="mt-4 flex flex-wrap items-center justify-between gap-4 border-b border-zinc-200 pb-4 dark:border-white/15">
+          <div className="flex flex-wrap items-center gap-3">
+            <div className="text-sm font-semibold text-zinc-700 dark:text-zinc-300">Scope</div>
+            <div className="grid w-max max-w-full grid-cols-3 gap-1.5">
+              {([
+                { key: "net", label: "All" },
+                { key: "brokerage", label: "Brokerage" },
+                { key: "retirement", label: "Retirement" },
+              ] as const).map((v) => (
+                <button
+                  key={v.key}
+                  type="button"
+                  onClick={() => setPieView(v.key)}
+                  className={
+                    BTN_CLASSES +
+                    " min-w-[6rem] shadow-sm " +
+                    (pieView === v.key
+                      ? "bg-zinc-900 text-white shadow dark:bg-white dark:text-zinc-900"
+                      : "border border-zinc-300 bg-white text-zinc-900 hover:bg-zinc-50 dark:border-white/20 dark:bg-zinc-950 dark:text-zinc-100 dark:hover:bg-zinc-900")
+                  }
+                >
+                  {v.label}
+                </button>
+              ))}
+            </div>
+
+            <div className="ml-2 text-sm font-semibold text-zinc-700 dark:text-zinc-300">Weights</div>
+            <div className="grid w-max max-w-full grid-cols-3 gap-1.5">
+              {(["net", "spot", "synthetic"] as const).map((m) => (
+                <button
+                  key={m}
+                  type="button"
+                  onClick={() => setPieMetric(m)}
+                  className={
+                    BTN_CLASSES +
+                    " min-w-[6rem] shadow-sm " +
+                    (pieMetric === m
+                      ? "bg-zinc-900 text-white shadow dark:bg-white dark:text-zinc-900"
+                      : "border border-zinc-300 bg-white text-zinc-900 hover:bg-zinc-50 dark:border-white/20 dark:bg-zinc-950 dark:text-zinc-100 dark:hover:bg-zinc-900")
+                  }
+                >
+                  {PIE_METRIC_LABEL[m]}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="text-sm font-semibold text-zinc-700 dark:text-zinc-300">
+            {pieView === "net" ? "All" : pieView === "brokerage" ? "Brokerage" : "Retirement"} · {PIE_METRIC_LABEL[pieMetric]}
+          </div>
+        </div>
 
         <div className="mt-3">
           <FinancePiePanel
@@ -739,7 +790,7 @@ export default function AllocationPage() {
               {sortedAssetClass.map((b) => (
                 <tr key={b.key} className="border-b border-zinc-200 dark:border-white/20">
                   <td className="py-2 pr-4 font-medium">{b.key}</td>
-                  <td className={"py-2 pr-4 text-right tabular-nums " + negClass(b.marketValue)}>
+                  <td className={"py-2 pr-4 text-right tabular-nums " + posNegClass(b.marketValue)}>
                     {usd2Masked(b.marketValue, privacy.masked)}
                   </td>
                   <td className="py-2 pr-4 text-right tabular-nums">{PCT2.format(b.weight * 100)}%</td>
@@ -768,7 +819,7 @@ export default function AllocationPage() {
               <summary className="cursor-pointer list-none">
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div className="text-sm font-semibold">{a.accountName}</div>
-                  <div className={"text-sm text-zinc-600 dark:text-zinc-400 " + negClass(a.totalMarketValue)}>
+                  <div className={"text-sm text-zinc-600 dark:text-zinc-400 " + posNegClass(a.totalMarketValue)}>
                     {usd2Masked(a.totalMarketValue, privacy.masked)}
                   </div>
                 </div>

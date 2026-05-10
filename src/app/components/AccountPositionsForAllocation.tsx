@@ -27,7 +27,9 @@ export function AccountPositionsForAllocation({ accountId }: { accountId: string
     const syms = Array.from(
       new Set(
         rs
-          .map((r) => (r.securityType === "option" ? r.underlyingSymbol : r.symbol) ?? "")
+          .map((r) =>
+            (r.securityType === "option" ? r.effectiveUnderlyingSymbol ?? r.underlyingSymbol : r.symbol) ?? "",
+          )
           .map((s) => (s ?? "").trim().toUpperCase())
           .filter(Boolean),
       ),

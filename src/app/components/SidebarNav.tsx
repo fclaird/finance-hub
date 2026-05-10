@@ -5,9 +5,12 @@ import { usePathname } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import { usePrivacy } from "@/app/components/PrivacyProvider";
 
-const NAV = [
+type NavItem = { href: string; label: string; prefix?: string };
+
+const NAV: NavItem[] = [
   { href: "/terminal", label: "Terminal" },
   { href: "/positions", label: "Positions" },
+  { href: "/strategies/all", label: "Option Strategies", prefix: "/strategies" },
   { href: "/allocation", label: "Allocation" },
   { href: "/diversification", label: "Diversification" },
   { href: "/earnings", label: "Earnings" },
@@ -117,7 +120,7 @@ export function SidebarNav() {
       </div>
       <nav className="mt-3 flex flex-col gap-1">
         {NAV.map((item) => {
-          const active = pathname === item.href;
+          const active = item.prefix ? pathname.startsWith(item.prefix) : pathname === item.href;
           return (
             <Link
               key={item.href}

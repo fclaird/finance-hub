@@ -1,5 +1,5 @@
 import { getDb } from "@/lib/db";
-import { getUnderlyingExposureRollup } from "@/lib/analytics/optionsExposure";
+import { getUnderlyingExposureRollup, syntheticEquityMvForSnapshot } from "@/lib/analytics/optionsExposure";
 import { latestSnapshotId } from "@/lib/snapshots";
 import type { DataMode } from "@/lib/dataMode";
 import { bucketFromAccount } from "@/lib/accountBuckets";
@@ -159,31 +159,7 @@ export function getAllocationByAccount(includeSynthetic: boolean, mode: DataMode
     // Per-account synthetic exposure: compute synthetic MV using the same method as consolidated,
     // but scoped to the account's latest snapshot.
     if (includeSynthetic) {
-      const syntheticEquityMv = db
-        .prepare(
-          `
-          WITH spot_prices AS (
-            SELECT s.symbol AS underlying_symbol,
-                   CASE WHEN SUM(p.quantity) != 0 THEN SUM(COALESCE(p.market_value, 0)) / SUM(p.quantity) ELSE 0 END AS px
-            FROM positions p
-            JOIN securities s ON s.id = p.security_id
-            WHERE p.snapshot_id = ?
-              AND s.security_type != 'option'
-            GROUP BY s.symbol
-          )
-          SELECT SUM( (p.quantity * 100 * COALESCE(og.delta, 0)) * COALESCE(sp.px, 0) ) AS mv
-          FROM positions p
-          JOIN securities s ON s.id = p.security_id
-          LEFT JOIN securities us ON us.id = s.underlying_security_id
-          LEFT JOIN option_greeks og ON og.position_id = p.id
-          LEFT JOIN spot_prices sp ON sp.underlying_symbol = COALESCE(us.symbol, s.symbol)
-          WHERE p.snapshot_id = ?
-            AND s.security_type = 'option'
-        `,
-        )
-        .get(s.snapshot_id, s.snapshot_id) as { mv: number | null } | undefined;
-
-      buckets.set("equity", (buckets.get("equity") ?? 0) + (syntheticEquityMv?.mv ?? 0));
+      buckets.set("equity", (buckets.get("equity") ?? 0) + syntheticEquityMvForSnapshot(db, s.snapshot_id, mode));
     }
 
     const total = Array.from(buckets.values()).reduce((a, b) => a + b, 0);
@@ -206,7 +182,7 @@ export function getAllocationByAccount(includeSynthetic: boolean, mode: DataMode
   return out;
 }
 
-export function getAllocationByBucket(includeSynthetic: boolean): AllocationBucketedResult {
+export function getAllocationByBucket(includeSynthetic: boolean, mode: DataMode = "auto"): AllocationBucketedResult {
   const db = getDb();
 
   const snapshots = db
@@ -253,30 +229,7 @@ export function getAllocationByBucket(includeSynthetic: boolean): AllocationBuck
     }
 
     if (includeSynthetic) {
-      const syntheticEquityMv = db
-        .prepare(
-          `
-          WITH spot_prices AS (
-            SELECT s.symbol AS underlying_symbol,
-                   CASE WHEN SUM(p.quantity) != 0 THEN SUM(COALESCE(p.market_value, 0)) / SUM(p.quantity) ELSE 0 END AS px
-            FROM positions p
-            JOIN securities s ON s.id = p.security_id
-            WHERE p.snapshot_id = ?
-              AND s.security_type != 'option'
-            GROUP BY s.symbol
-          )
-          SELECT SUM( (p.quantity * 100 * COALESCE(og.delta, 0)) * COALESCE(sp.px, 0) ) AS mv
-          FROM positions p
-          JOIN securities s ON s.id = p.security_id
-          LEFT JOIN securities us ON us.id = s.underlying_security_id
-          LEFT JOIN option_greeks og ON og.position_id = p.id
-          LEFT JOIN spot_prices sp ON sp.underlying_symbol = COALESCE(us.symbol, s.symbol)
-          WHERE p.snapshot_id = ?
-            AND s.security_type = 'option'
-        `,
-        )
-        .get(s.snapshot_id, s.snapshot_id) as { mv: number | null } | undefined;
-      buckets.set("equity", (buckets.get("equity") ?? 0) + (syntheticEquityMv?.mv ?? 0));
+      buckets.set("equity", (buckets.get("equity") ?? 0) + syntheticEquityMvForSnapshot(db, s.snapshot_id, mode));
     }
   }
 

@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 
 import { getDb } from "@/lib/db";
 import { isPosterityAccountId, notPosterityWhereSql } from "@/lib/posterity";
+import { normalizeOptionUnderlying } from "@/lib/options/optionUnderlying";
 import { latestSnapshotId } from "@/lib/snapshots";
 
 type ParsedOption = {
@@ -129,7 +130,10 @@ function buildPositionsForSnapshots(db: ReturnType<typeof getDb>, snaps: string[
 
   const underPx = new Map<string, number>();
   for (const u of underRows) {
-    if (u.qty) underPx.set(u.symbol, u.mv / u.qty);
+    if (u.qty) {
+      const key = (u.symbol ?? "").trim().toUpperCase();
+      if (key) underPx.set(key, u.mv / u.qty);
+    }
   }
 
   const out = rows.map((r) => {
@@ -143,6 +147,7 @@ function buildPositionsForSnapshots(db: ReturnType<typeof getDb>, snaps: string[
         ...r,
         symbol: r.symbol ?? "",
         securityName: r.securityName ?? "",
+        effectiveUnderlyingSymbol: sym,
         price,
         marketValue,
         optionExpiration: null,
@@ -156,7 +161,11 @@ function buildPositionsForSnapshots(db: ReturnType<typeof getDb>, snaps: string[
 
     const parsed = parseOptionFromSecurity(r.symbol, r.securityName);
     const dte = parsed ? daysToExpiration(parsed.expiration, r.asOf) : null;
-    const S = r.underlyingSymbol ? underPx.get(r.underlyingSymbol) : undefined;
+    const effectiveUnderlyingSymbol = normalizeOptionUnderlying(r.underlyingSymbol, r.symbol);
+    const fromJoined = r.underlyingSymbol
+      ? underPx.get((r.underlyingSymbol ?? "").trim().toUpperCase())
+      : undefined;
+    const S = fromJoined ?? underPx.get(effectiveUnderlyingSymbol);
     const K = parsed?.strike;
     const right = parsed?.right;
     const qtyAbs = Math.abs(r.quantity ?? 0);
@@ -174,6 +183,7 @@ function buildPositionsForSnapshots(db: ReturnType<typeof getDb>, snaps: string[
       ...r,
       symbol: r.symbol ?? "",
       securityName: r.securityName ?? "",
+      effectiveUnderlyingSymbol,
       optionExpiration: parsed?.expiration ?? null,
       optionRight: parsed?.right ?? null,
       optionStrike: parsed?.strike ?? null,

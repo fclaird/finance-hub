@@ -2,7 +2,17 @@
 
 import { useEffect, useMemo, useState } from "react";
 
+import { MAX_TRANSACTION_LOOKBACK_DAYS } from "@/lib/schwab/config";
+
 type SyncResult = { ok: boolean; accounts?: number; error?: string };
+type TxSyncResult = {
+  ok: boolean;
+  lookbackDays?: number;
+  accountsUpdated?: number;
+  transactionsUpserted?: number;
+  classified?: number;
+  error?: string;
+};
 type GreeksResult = { ok: boolean; updated?: number; error?: string };
 type SchwabStatus =
   | { ok: true; connected: false }
@@ -15,6 +25,20 @@ type SchwabStatus =
       accessValid: boolean;
       scope: string | null;
       tokenType: string | null;
+    }
+  | { ok: false; error: string };
+
+type XStatus =
+  | { ok: true; configured: false; connected: false }
+  | {
+      ok: true;
+      configured: true;
+      connected: boolean;
+      obtainedAt?: number;
+      expiresAt?: number;
+      hasRefresh?: boolean;
+      userId?: string | null;
+      scope?: string | null;
     }
   | { ok: false; error: string };
 
@@ -31,17 +55,30 @@ declare global {
 
 export default function ConnectionsPage() {
   const [syncing, setSyncing] = useState(false);
+  const [syncingTx, setSyncingTx] = useState(false);
   const [result, setResult] = useState<SyncResult | null>(null);
+  const [txResult, setTxResult] = useState<TxSyncResult | null>(null);
   const [greeks, setGreeks] = useState<GreeksResult | null>(null);
   const [refreshingGreeks, setRefreshingGreeks] = useState(false);
   const [schwabStatus, setSchwabStatus] = useState<SchwabStatus | null>(null);
   const [checkingStatus, setCheckingStatus] = useState(false);
+  const [xStatus, setXStatus] = useState<XStatus | null>(null);
+  const [checkingX, setCheckingX] = useState(false);
+  const [xFlash, setXFlash] = useState<string | null>(null);
+  const [xErrorParam, setXErrorParam] = useState<string | null>(null);
 
   const body = useMemo(() => {
     if (!result) return null;
     if (!result.ok) return `Error: ${result.error ?? "Unknown error"}`;
     return `Synced ${result.accounts ?? 0} account(s).`;
   }, [result]);
+
+  const txBody = useMemo(() => {
+    if (!txResult) return null;
+    if (!txResult.ok) return `Transactions: ${txResult.error ?? "Unknown error"}`;
+    const lb = txResult.lookbackDays != null ? ` · ${txResult.lookbackDays}d lookback` : "";
+    return `Transactions: ${txResult.transactionsUpserted ?? 0} upserted, ${txResult.classified ?? 0} classified across ${txResult.accountsUpdated ?? 0} account(s)${lb}.`;
+  }, [txResult]);
 
   async function loadSchwabStatus() {
     setCheckingStatus(true);
@@ -56,11 +93,39 @@ export default function ConnectionsPage() {
     }
   }
 
+  async function loadXStatus() {
+    setCheckingX(true);
+    try {
+      const resp = await fetch("/api/x/status", { cache: "no-store" });
+      const json = (await resp.json()) as XStatus;
+      setXStatus(json);
+    } catch (e) {
+      setXStatus({ ok: false, error: e instanceof Error ? e.message : String(e) });
+    } finally {
+      setCheckingX(false);
+    }
+  }
+
   useEffect(() => {
     const t = setTimeout(() => {
       void loadSchwabStatus();
+      void loadXStatus();
     }, 0);
     return () => clearTimeout(t);
+  }, []);
+
+  useEffect(() => {
+    const t = window.setTimeout(() => {
+      try {
+        const q = new URLSearchParams(window.location.search);
+        setXFlash(q.get("x"));
+        setXErrorParam(q.get("x_error"));
+      } catch {
+        setXFlash(null);
+        setXErrorParam(null);
+      }
+    }, 0);
+    return () => window.clearTimeout(t);
   }, []);
 
   async function syncNow() {
@@ -76,6 +141,25 @@ export default function ConnectionsPage() {
       setResult({ ok: false, error: e instanceof Error ? e.message : String(e) });
     } finally {
       setSyncing(false);
+    }
+  }
+
+  async function syncTransactionsNow() {
+    setSyncingTx(true);
+    setTxResult(null);
+    try {
+      const resp = await fetch("/api/schwab/transactions/sync", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ lookbackDays: MAX_TRANSACTION_LOOKBACK_DAYS }),
+      });
+      const json = (await resp.json()) as TxSyncResult;
+      setTxResult(json);
+      await loadSchwabStatus();
+    } catch (e) {
+      setTxResult({ ok: false, error: e instanceof Error ? e.message : String(e) });
+    } finally {
+      setSyncingTx(false);
     }
   }
 
@@ -95,7 +179,7 @@ export default function ConnectionsPage() {
   }
 
   return (
-    <div className="mx-auto flex w-full max-w-4xl flex-1 flex-col gap-6 px-6 py-8">
+    <div className="flex w-full max-w-4xl flex-1 flex-col gap-6 py-8 pl-4 pr-6">
       <div>
         <h1 className="text-2xl font-semibold tracking-tight">Welcome</h1>
         <p className="mt-2 text-sm leading-6 text-zinc-600 dark:text-zinc-400">
@@ -177,6 +261,15 @@ export default function ConnectionsPage() {
           </button>
           <button
             type="button"
+            onClick={() => void syncTransactionsNow()}
+            disabled={syncingTx}
+            className="rounded-full border border-zinc-300 bg-white px-4 py-2 text-sm font-medium text-zinc-900 shadow-sm hover:bg-zinc-50 disabled:opacity-50 dark:border-white/20 dark:bg-zinc-950 dark:text-zinc-100 dark:hover:bg-white/5"
+            title={`Pull TRADE history in 59-day API windows (up to ${MAX_TRANSACTION_LOOKBACK_DAYS} days per account — may take a few minutes). Schwab may not return data older than they retain.`}
+          >
+            {syncingTx ? "Syncing transactions…" : "Sync transactions"}
+          </button>
+          <button
+            type="button"
             onClick={refreshGreeks}
             disabled={refreshingGreeks}
             className="rounded-full border border-zinc-300 bg-white px-4 py-2 text-sm font-medium text-zinc-900 shadow-sm hover:bg-zinc-50 disabled:opacity-50 dark:border-white/20 dark:bg-zinc-950 dark:text-zinc-100 dark:hover:bg-white/5"
@@ -199,6 +292,19 @@ export default function ConnectionsPage() {
           </div>
         ) : null}
 
+        {txBody ? (
+          <div
+            className={
+              "mt-3 rounded-xl p-3 text-sm " +
+              (txResult?.ok
+                ? "bg-zinc-50 text-zinc-800 dark:bg-black/40 dark:text-zinc-200"
+                : "bg-red-50 text-red-900 dark:bg-red-950/30 dark:text-red-200")
+            }
+          >
+            {txBody}
+          </div>
+        ) : null}
+
         {greeks ? (
           <div className="mt-3 rounded-xl bg-zinc-50 p-3 text-sm text-zinc-800 dark:bg-black/40 dark:text-zinc-200">
             {greeks.ok
@@ -206,6 +312,79 @@ export default function ConnectionsPage() {
               : `Greeks refresh error: ${greeks.error ?? "Unknown error"}`}
           </div>
         ) : null}
+      </section>
+
+      <section className="rounded-2xl border border-zinc-300 bg-white p-6 shadow-sm dark:border-white/20 dark:bg-zinc-950">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <div className="text-base font-semibold">X (Twitter)</div>
+            <div className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
+              OAuth for timeline digest + cashtag search on symbol pages. Tokens are stored in the encrypted secrets file.               On the Terminal page use <strong>Fetch from X</strong> to refresh the digest interactively. For automation, schedule{" "}
+              <span className="font-mono text-xs">GET/POST /api/internal/x-digest/refresh</span> with{" "}
+              <span className="font-mono text-xs">Authorization: Bearer CRON_SECRET</span> (or <span className="font-mono text-xs">?secret=</span>).
+            </div>
+          </div>
+          {xStatus?.ok === true && xStatus.configured ? (
+            <a
+              href="/api/x/oauth/start"
+              className="shrink-0 rounded-full bg-zinc-950 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-800 dark:bg-white dark:text-black dark:hover:bg-zinc-200"
+            >
+              {xStatus.connected ? "Reconnect X" : "Connect X"}
+            </a>
+          ) : null}
+        </div>
+
+        {xFlash === "connected" ? (
+          <div className="mt-3 rounded-xl bg-emerald-50 p-3 text-sm text-emerald-900 dark:bg-emerald-500/15 dark:text-emerald-100">
+            X connected. Run a digest refresh to populate the Terminal digest.
+          </div>
+        ) : null}
+        {xErrorParam ? (
+          <div className="mt-3 rounded-xl bg-red-50 p-3 text-sm text-red-900 dark:bg-red-950/40 dark:text-red-200">
+            X OAuth error: {decodeURIComponent(xErrorParam)}
+          </div>
+        ) : null}
+
+        <div className="mt-3 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-zinc-300 bg-white/60 px-3 py-2 text-xs dark:border-white/20 dark:bg-black/20">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="font-semibold text-zinc-700 dark:text-zinc-300">Status</span>
+            {checkingX ? (
+              <span className="text-zinc-600 dark:text-zinc-400">Checking…</span>
+            ) : xStatus?.ok === true && !xStatus.configured ? (
+              <span className="text-zinc-600 dark:text-zinc-400">
+                Not configured — set <span className="font-mono">X_CLIENT_ID</span>, <span className="font-mono">X_CLIENT_SECRET</span>,{" "}
+                <span className="font-mono">X_REDIRECT_URI</span> in <span className="font-mono">.env.local</span>.
+              </span>
+            ) : xStatus?.ok === true && xStatus.connected ? (
+              <span className="rounded-full bg-emerald-100 px-2 py-0.5 font-semibold text-emerald-900 dark:bg-emerald-500/20 dark:text-emerald-200">
+                Connected
+              </span>
+            ) : xStatus?.ok === true ? (
+              <span className="rounded-full bg-amber-100 px-2 py-0.5 font-semibold text-amber-900 dark:bg-amber-500/20 dark:text-amber-200">
+                Not connected
+              </span>
+            ) : xStatus?.ok === false ? (
+              <span className="text-red-700 dark:text-red-300">{xStatus.error}</span>
+            ) : (
+              <span className="text-zinc-600 dark:text-zinc-400">—</span>
+            )}
+
+            {xStatus?.ok === true && xStatus.configured && xStatus.connected ? (
+              <span className="text-zinc-600 dark:text-zinc-400">
+                User <span className="font-mono">{xStatus.userId ?? "—"}</span>
+                {xStatus.expiresAt ? ` · token expires ${new Date(xStatus.expiresAt).toLocaleString()}` : null}
+              </span>
+            ) : null}
+          </div>
+
+          <button
+            type="button"
+            onClick={() => void loadXStatus()}
+            className="rounded-full border border-zinc-300 bg-white px-3 py-1.5 text-xs font-semibold text-zinc-900 hover:bg-zinc-50 dark:border-white/20 dark:bg-zinc-950 dark:text-zinc-100 dark:hover:bg-white/5"
+          >
+            Refresh status
+          </button>
+        </div>
       </section>
 
       <section className="rounded-2xl border border-zinc-300 bg-white p-6 shadow-sm dark:border-white/20 dark:bg-zinc-950">
