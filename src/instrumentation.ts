@@ -1,9 +1,13 @@
+import { scheduleColdStartupDataPullOnce } from "@/lib/coldStartupDataPull";
+
 /**
  * Server bootstrap hooks. Used for local (non-Vercel) scheduled jobs such as
  * dividend-model rollup finalization — replaces Vercel Cron for desktop/long-running installs.
  */
 export async function register() {
   if (process.env.NEXT_RUNTIME !== "nodejs") return;
+  scheduleColdStartupDataPullOnce();
+
   if (process.env.VERCEL === "1") return;
 
   const secret = process.env.CRON_SECRET?.trim();

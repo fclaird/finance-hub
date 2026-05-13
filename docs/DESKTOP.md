@@ -32,6 +32,15 @@ Optional: `INTERNAL_APP_BASE_URL=http://127.0.0.1:3049` (defaults are derived fr
 
 The hourly Schwab sync loop in [`src/lib/scheduler.ts`](src/lib/scheduler.ts) uses `INTERNAL_APP_BASE_URL` or `http://127.0.0.1:${PORT}`.
 
+## Cold-start full data pull (market closed)
+
+On local / desktop / non-Vercel Node startup, `src/lib/coldStartupDataPull.ts` runs **once per process** (~3.5s after bootstrap) **only while US equities RTH is closed**: Schwab holdings sync, taxonomy + market-cap refresh for all holdings, transaction history sync, Schwab quotes to `price_points`, Finnhub earnings sync, weekly portfolio snapshots, allocation daily close (**both** `auto`/`schwab`), and dividend-model rollup **when `CRON_SECRET` is set**. If RTH is open, this orchestration **skips** (live terminals rely on polling during the session).
+
+Environment overrides:
+
+- `COLD_STARTUP_PULL_DELAY_MS` — delay before the pull (default 3500).
+- `FORCE_COLD_STARTUP_PULL_ON_VERCEL=1` — allow the orchestration on Vercel deployments (otherwise skipped to reduce serverless fan-out).
+
 ## Packaging notes
 
 - **Bundled Node**: `npm run desktop:prepare` copies the `node` binary from the machine that runs the script. Build installers on the same OS/arch you target (or extend the script to download official Node tarballs per platform).

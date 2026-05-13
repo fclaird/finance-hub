@@ -1,3 +1,4 @@
+import { scheduleColdStartupDataPullOnce } from "@/lib/coldStartupDataPull";
 import { logError, logLine } from "@/lib/log";
 
 type SchedulerState = {
@@ -27,6 +28,7 @@ export function startSchedulerOnce() {
 
   s.started = true;
   logLine("scheduler_start");
+  scheduleColdStartupDataPullOnce();
 
   const HOUR_MS = 60 * 60 * 1000;
   const jitterMs = () => Math.floor(Math.random() * 30_000);
