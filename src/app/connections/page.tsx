@@ -291,8 +291,18 @@ export default function ConnectionsPage() {
 
               await ensurePlaid();
               const ltResp = await fetch("/api/plaid/link-token", { method: "POST" });
-              const ltJson = (await ltResp.json()) as { ok: boolean; link_token?: string; error?: string };
-              if (!ltJson.ok || !ltJson.link_token) throw new Error(ltJson.error ?? "Failed to create link token");
+              const raw = await ltResp.text().catch(() => "");
+              let ltJson: { ok: boolean; link_token?: string; error?: string };
+              try {
+                ltJson = raw ? (JSON.parse(raw) as typeof ltJson) : { ok: false, error: "Empty response" };
+              } catch {
+                throw new Error(
+                  `Plaid link token failed (${ltResp.status}): ${raw?.slice(0, 280) || "non-JSON body"}`,
+                );
+              }
+              if (!ltJson.ok || !ltJson.link_token) {
+                throw new Error(ltJson.error ?? `Failed to create link token (${ltResp.status})`);
+              }
 
               const handler = window.Plaid?.create({
                 token: ltJson.link_token,
