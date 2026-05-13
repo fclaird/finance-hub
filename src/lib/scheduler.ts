@@ -35,7 +35,9 @@ export function startSchedulerOnce() {
     try {
       s.lastRunAt = Date.now();
       // Call internal API route so all logic stays in one place.
-      await fetch("https://127.0.0.1:3000/api/schwab/sync", { method: "POST" });
+      const port = process.env.PORT ?? "3000";
+      const base = (process.env.INTERNAL_APP_BASE_URL ?? `http://127.0.0.1:${port}`).replace(/\/+$/, "");
+      await fetch(`${base}/api/schwab/sync`, { method: "POST" });
       logLine("scheduler_schwab_sync_ok");
     } catch (e) {
       logError("scheduler_schwab_sync_failed", e);

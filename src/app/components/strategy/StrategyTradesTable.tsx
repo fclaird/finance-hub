@@ -2,7 +2,9 @@
 
 import { useMemo, useState } from "react";
 
+import { SymbolLink } from "@/app/components/SymbolLink";
 import { formatUsd2 } from "@/lib/format";
+import { symbolPageTargetFromInstrument } from "@/lib/symbolPage";
 import { posNegClass } from "@/lib/terminal/colors";
 import { STRATEGY_TAB_META } from "@/lib/strategy/strategyCategories";
 import type { StrategyTradeApiRow } from "@/lib/strategy/strategyTradeStats";
@@ -129,10 +131,14 @@ export function StrategyTradesTable({
           {sorted.map((r) => (
             <tr key={r.id} className="border-t border-zinc-100 dark:border-white/10">
               <td className="px-3 py-2 font-mono text-xs text-zinc-900 dark:text-zinc-100">
-                {r.symbol ?? r.underlyingSymbol ?? "—"}
-                {r.securityType === "option" && r.underlyingSymbol ? (
-                  <span className="ml-1 text-zinc-500 dark:text-zinc-400">({r.underlyingSymbol})</span>
-                ) : null}
+                <SymbolLink symbol={symbolPageTargetFromInstrument(r)} className="font-mono">
+                  <span>
+                    {r.symbol ?? r.underlyingSymbol ?? "—"}
+                    {r.securityType === "option" && r.underlyingSymbol ? (
+                      <span className="ml-1 text-zinc-500 dark:text-zinc-400">({r.underlyingSymbol})</span>
+                    ) : null}
+                  </span>
+                </SymbolLink>
               </td>
               {showStrategyColumn ? (
                 <td className="px-3 py-2 text-zinc-700 dark:text-zinc-300">{strategyRowLabel(r.strategyCategory)}</td>

@@ -1,9 +1,21 @@
 "use client";
 
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type SVGProps } from "react";
+import { useRouter } from "next/navigation";
+import {
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+  type SVGProps,
+} from "react";
 
 import { usePrivacy } from "@/app/components/PrivacyProvider";
+import { SymbolLink } from "@/app/components/SymbolLink";
+import { distinctColorForIndex } from "@/lib/charts/pieEarthTones";
 import { formatUsd2 } from "@/lib/format";
+import { symbolPageHref } from "@/lib/symbolPage";
 import { Cell, Pie, PieChart, ResponsiveContainer, Tooltip, type PieLabelRenderProps } from "recharts";
 
 const PCT2 = new Intl.NumberFormat(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -204,23 +216,6 @@ function computeLabelSpread(
   return { yShift, extraArmPx };
 }
 
-const EARTH_TONE_PIE_COLORS = [
-  "#0f766e", // deep teal
-  "#4d7c0f", // rich olive
-  "#c2410f", // warm terracotta
-  "#d97706", // golden amber
-  "#10b981", // vibrant forest green
-  "#b45309", // earthy brown-orange
-  "#14b8a6", // sage teal
-  "#b91c1c", // burnt sienna
-  "#166534", // deep moss
-  "#ca8a04", // warm ochre
-] as const;
-
-function distinctColorForIndex(i: number) {
-  return EARTH_TONE_PIE_COLORS[i % EARTH_TONE_PIE_COLORS.length]!;
-}
-
 export type PieSliceConstituent = { symbol: string; marketValue: number };
 
 export type PieBucket = {
@@ -246,18 +241,32 @@ function useCompactPieLayout() {
   return compact;
 }
 
+/** Category labels on allocation bar chart Y-axis (keep pie callouts visually aligned). */
+const ALLOCATION_BAR_MATCH_FONT_PX = 16;
+const ALLOCATION_BAR_MATCH_FONT_WEIGHT = 800;
+
 export function FinancePiePanel({
   title,
   buckets,
   emptyMessage,
+  footer,
+  symbolColorMap,
+  /** `split`: denser margins, larger pie, labels match allocation bar Y-axis (size/weight/color). */
+  layout = "default",
 }: {
   title: string;
   buckets: PieBucket[];
   /** Shown when every slice is filtered out (e.g. all synthetic MV are zero). */
   emptyMessage?: string;
+  /** Rendered below the chart inside the same card (e.g. scope controls). */
+  footer?: ReactNode;
+  symbolColorMap?: Map<string, string>;
+  layout?: "default" | "split";
 }) {
   const privacy = usePrivacy();
+  const router = useRouter();
   const compact = useCompactPieLayout();
+  const split = layout === "split";
   const chartWrapRef = useRef<HTMLDivElement>(null);
   const [measuredChart, setMeasuredChart] = useState<{ w: number; h: number } | null>(null);
   const b = buckets[0];
@@ -281,33 +290,36 @@ export function FinancePiePanel({
     });
     ro.observe(el);
     return () => ro.disconnect();
-  }, [data.length, compact]);
+  }, [data.length, compact, split]);
   const total = b?.totalMarketValue ?? 0;
 
-  const labelFontPx = compact ? 11 : 24;
-  const textPad = compact ? 6 : 10;
+  const labelFontPx = split ? ALLOCATION_BAR_MATCH_FONT_PX : compact ? 11 : 24;
+  const labelFontWeight = split ? ALLOCATION_BAR_MATCH_FONT_WEIGHT : 600;
+  const textPad = split ? 8 : compact ? 6 : 10;
   /** Radial segment from slice rim to pivot — keep short unless packing forces horizontal stagger. */
-  const radialToPivot = compact ? 28 : 44;
+  const radialToPivot = split ? 26 : compact ? 28 : 44;
   /** Horizontal arm from pivot toward label (baseline; stagger adds more only when vertically compressed). */
-  const horizontalArm = compact ? 28 : 44;
+  const horizontalArm = split ? 30 : compact ? 28 : 44;
   /** Extra horizontal arm when many same-side labels are packed tighter than their natural angular spread. */
-  const staggerArmPx = compact ? 12 : 18;
+  const staggerArmPx = split ? 12 : compact ? 12 : 18;
   /** Reserve horizontal space for longest label + staggered arms (approximate). */
-  const maxTextReservePx = compact ? 112 : 330;
+  const maxTextReservePx = split ? 240 : compact ? 112 : 330;
 
   const pieMargin = useMemo(
     () =>
-      compact
-        ? { top: 52, right: 68, bottom: 52, left: 68 }
-        : { top: 80, right: 112, bottom: 80, left: 112 },
-    [compact],
+      split
+        ? { top: 28, right: 72, bottom: 28, left: 48 }
+        : compact
+          ? { top: 52, right: 68, bottom: 52, left: 68 }
+          : { top: 58, right: 96, bottom: 58, left: 96 },
+    [compact, split],
   );
-  const innerR = compact ? "28%" : "34%";
-  const outerR = compact ? "82%" : "66%";
+  const innerR = split ? "30%" : compact ? "28%" : "34%";
+  const outerR = split ? "78%" : compact ? "82%" : "72%";
 
   const midAngles = useMemo(() => approximateMidAngles(data.map((d) => d.marketValue), 0.5), [data]);
-  const outerFrac = compact ? 0.82 : 0.66;
-  const defaultDims = compact ? { w: 360, h: 320 } : { w: 800, h: 560 };
+  const outerFrac = split ? 0.78 : compact ? 0.82 : 0.72;
+  const defaultDims = split ? { w: 520, h: 400 } : compact ? { w: 360, h: 320 } : { w: 800, h: 420 };
   const chartW = measuredChart?.w ?? defaultDims.w;
   const chartH = measuredChart?.h ?? defaultDims.h;
   const { cx: estCx, cy: estCy, outerRadius: estOuterR } = useMemo(
@@ -341,15 +353,33 @@ export function FinancePiePanel({
   ]);
 
   return (
-    <div className="w-full min-w-0 rounded-xl border border-zinc-300 p-3 sm:p-4 dark:border-white/20">
-      <div className="flex flex-wrap items-center justify-between gap-2 sm:gap-3">
-        <div className="min-w-0 text-sm font-semibold">{title}</div>
-        <div className="shrink-0 text-sm tabular-nums text-zinc-600 dark:text-zinc-400">
+    <div
+      className={
+        split
+          ? "flex h-full min-h-0 w-full min-w-0 flex-col bg-transparent"
+          : "w-full min-w-0 rounded-xl border border-zinc-300 px-3 pb-3 pt-2.5 sm:px-4 sm:pb-3.5 sm:pt-3 dark:border-white/20"
+      }
+    >
+      <div className={"flex flex-wrap items-center justify-between gap-2 sm:gap-3 " + (split ? "shrink-0 pb-1" : "")}>
+        <div className={"min-w-0 font-semibold " + (split ? "text-xs text-zinc-800 dark:text-zinc-100" : "text-sm")}>
+          {title}
+        </div>
+        <div
+          className={
+            "shrink-0 tabular-nums text-zinc-600 dark:text-zinc-400 " + (split ? "text-xs" : "text-sm")
+          }
+        >
           Total {formatUsd2(total, { mask: privacy.masked })}
         </div>
       </div>
 
-      <div className={"mt-3 w-full min-w-0 overflow-x-auto sm:mt-4 " + (compact ? "min-h-[18rem]" : "min-h-[32rem]")}>
+      <div
+        className={
+          split
+            ? "mt-1 min-h-0 flex-1 w-full min-w-0 overflow-visible"
+            : "mt-2 w-full min-w-0 overflow-x-auto sm:mt-3 " + (compact ? "min-h-[18rem]" : "min-h-0")
+        }
+      >
         {data.length === 0 ? (
           <div className="flex h-full max-w-md flex-col items-center justify-center gap-2 px-4 py-12 text-center text-sm text-zinc-600 dark:text-zinc-400">
             <span>{emptyMessage ?? "No data yet."}</span>
@@ -359,17 +389,19 @@ export function FinancePiePanel({
             <div
               ref={chartWrapRef}
               className={
-                compact
-                  ? "h-[min(22rem,70vh)] w-full min-h-[16rem] overflow-visible"
-                  : "h-[min(56rem,110vw)] w-full min-h-[28rem] overflow-visible"
+                split
+                  ? "h-full min-h-[clamp(220px,42vh,520px)] w-full flex-1 overflow-visible lg:min-h-[clamp(260px,50vh,560px)]"
+                  : compact
+                    ? "h-[min(22rem,70vh)] w-full min-h-[16rem] overflow-visible"
+                    : "aspect-[16/11] h-auto min-h-[22rem] w-full max-h-[min(36rem,76dvh)] overflow-visible"
               }
             >
               <ResponsiveContainer
                 width="100%"
                 height="100%"
                 minWidth={100}
-                minHeight={compact ? 240 : 448}
-                initialDimension={{ width: compact ? 360 : 800, height: compact ? 320 : 560 }}
+                minHeight={split ? 220 : compact ? 240 : 360}
+                initialDimension={{ width: split ? 520 : compact ? 360 : 800, height: split ? 400 : compact ? 320 : 420 }}
               >
                 <PieChart margin={pieMargin}>
                   <Tooltip
@@ -395,7 +427,9 @@ export function FinancePiePanel({
                             <ul className="mt-2 max-h-52 space-y-1 overflow-y-auto border-t border-zinc-200 pt-2 text-xs dark:border-white/20">
                               {list.map((c) => (
                                 <li key={c.symbol} className="flex justify-between gap-4 tabular-nums">
-                                  <span className="font-medium text-zinc-800 dark:text-zinc-200">{c.symbol}</span>
+                                  <SymbolLink symbol={c.symbol} className="font-medium text-zinc-800 dark:text-zinc-200">
+                                    {c.symbol}
+                                  </SymbolLink>
                                   <span className="text-zinc-600 dark:text-zinc-400">
                                     {formatUsd2(c.marketValue, { mask: privacy.masked })}
                                   </span>
@@ -451,7 +485,10 @@ export function FinancePiePanel({
                         textPad,
                         pivot.x,
                       );
-                      const stroke = typeof lineProps.stroke === "string" ? lineProps.stroke : "#71717a";
+                      const entryKey = (data[idx]?.key ?? "").trim();
+                      const stroke =
+                        symbolColorMap?.get(entryKey) ??
+                        (typeof lineProps.stroke === "string" ? lineProps.stroke : "#71717a");
                       return (
                         <path
                           d={`M${p0.x},${p0.y}L${pivot.x},${pivot.y}L${elbow.x},${elbow.y}`}
@@ -495,26 +532,50 @@ export function FinancePiePanel({
                       const { lx, ly } = fit;
                       const anchor: "start" | "end" = sign > 0 ? "start" : "end";
                       const raw = String(name ?? "").trim();
-                      const maxLen = compact ? 12 : 22;
+                      const maxLen = split ? 36 : compact ? 12 : 22;
                       const short = raw.length > maxLen ? `${raw.slice(0, maxLen - 1)}…` : raw;
+                      const entryKey = raw;
+                      const sliceLabelColor = symbolColorMap?.get(entryKey);
+                      const href = split ? symbolPageHref(raw) : null;
                       return (
                         <text
                           x={lx}
                           y={ly}
                           textAnchor={anchor}
                           dominantBaseline="central"
-                          fill="currentColor"
-                          className="text-zinc-800 dark:text-zinc-200"
-                          style={{ fontSize: labelFontPx, fontWeight: 600 }}
+                          fill={sliceLabelColor ?? "currentColor"}
+                          className={
+                            split
+                              ? sliceLabelColor
+                                ? undefined
+                                : "fill-zinc-900 dark:fill-zinc-100"
+                              : "text-zinc-800 dark:text-zinc-200"
+                          }
+                          style={{
+                            fontSize: labelFontPx,
+                            fontWeight: labelFontWeight,
+                            cursor: href ? "pointer" : undefined,
+                          }}
+                          onClick={
+                            href
+                              ? (e) => {
+                                  e.preventDefault();
+                                  router.push(href);
+                                }
+                              : undefined
+                          }
                         >
-                          {compact ? `${PCT2.format(p * 100)}%` : `${short} ${PCT2.format(p * 100)}%`}
+                          {href ? <title>Open in Terminal</title> : null}
+                          {split || !compact ? `${short} ${PCT2.format(p * 100)}%` : `${PCT2.format(p * 100)}%`}
                         </text>
                       );
                     }}
                   >
-                    {data.map((entry, idx) => (
-                      <Cell key={entry.key} fill={distinctColorForIndex(idx)} />
-                    ))}
+                    {data.map((entry, idx) => {
+                      const k = (entry.key ?? "").trim();
+                      const fill = symbolColorMap?.get(k) ?? distinctColorForIndex(idx);
+                      return <Cell key={entry.key} fill={fill} />;
+                    })}
                   </Pie>
                 </PieChart>
               </ResponsiveContainer>
@@ -522,6 +583,11 @@ export function FinancePiePanel({
           </>
         )}
       </div>
+      {footer ? (
+        <div className={"border-t border-zinc-200 pt-3 dark:border-white/15 " + (split ? "mt-2 shrink-0" : "mt-3")}>
+          {footer}
+        </div>
+      ) : null}
     </div>
   );
 }

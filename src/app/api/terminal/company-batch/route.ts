@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
 
+import { getSecCompanyTickerMap, lookupSecCompanyTitle } from "@/lib/openData/secCompanyTickers";
+import { resolveCompanyNamesOpenFigi } from "@/lib/openData/openFigiNames";
 import { fetchSchwabInstrumentFundamental } from "@/lib/schwab/instrumentFundamental";
 
 function normSym(s: string) {
@@ -34,6 +36,24 @@ export async function POST(req: Request) {
         }
       }),
     );
+  }
+
+  const missingAfterSchwab = symbols.filter((s) => !names[s]);
+  if (missingAfterSchwab.length > 0) {
+    const openFigi = await resolveCompanyNamesOpenFigi(missingAfterSchwab);
+    for (const s of missingAfterSchwab) {
+      const hit = openFigi[s]?.trim();
+      if (hit) names[s] = hit;
+    }
+  }
+
+  const stillMissing = symbols.filter((s) => !names[s]);
+  if (stillMissing.length > 0) {
+    const secMap = await getSecCompanyTickerMap();
+    for (const s of stillMissing) {
+      const t = lookupSecCompanyTitle(secMap, s);
+      if (t) names[s] = t;
+    }
   }
 
   return NextResponse.json({ ok: true, names });

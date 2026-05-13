@@ -43,10 +43,10 @@ export function LiveStatusBanner() {
 
   return (
     <div className={bg}>
-      <div className="flex w-full max-w-6xl items-center justify-between gap-3 py-2 pl-4 pr-6 text-sm">
+      <div className="flex w-full max-w-[120rem] items-center justify-between gap-4 py-2.5 pl-5 pr-7 text-[15px] leading-snug">
         <div className="min-w-0 truncate font-semibold">{view.text}</div>
         {live !== true ? (
-          <Link href="/connections" className="shrink-0 rounded-full bg-white/15 px-3 py-1 text-xs font-bold hover:bg-white/25">
+          <Link href="/connections" className="shrink-0 rounded-full bg-white/15 px-3.5 py-1.5 text-[13px] font-bold hover:bg-white/25">
             Connections
           </Link>
         ) : null}

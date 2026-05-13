@@ -13,6 +13,7 @@ import {
   YAxis,
 } from "recharts";
 import { usePrivacy } from "@/app/components/PrivacyProvider";
+import { SymbolLink } from "@/app/components/SymbolLink";
 import { formatUsd2 } from "@/lib/format";
 
 type Row = { symbol: string; lastMonth: number; nextMonth: number; nextYearProjected: number };
@@ -68,7 +69,7 @@ export default function DividendsPage() {
   );
 
   return (
-    <div className="flex w-full max-w-6xl flex-1 flex-col gap-6 py-8 pl-4 pr-6">
+    <div className="flex w-full max-w-[108rem] flex-1 flex-col gap-8 py-10 pl-5 pr-6 sm:pl-6 sm:pr-8">
       <div>
         <h1 className="text-2xl font-semibold tracking-tight">Dividends</h1>
         <p className="mt-2 text-sm leading-6 text-zinc-600 dark:text-zinc-400">
@@ -139,7 +140,9 @@ export default function DividendsPage() {
             <tbody>
               {(data?.bySecurity ?? []).map((r) => (
                 <tr key={r.symbol} className="border-b border-zinc-200 dark:border-white/20">
-                  <td className="py-2 pr-4 font-medium">{r.symbol}</td>
+                  <td className="py-2 pr-4 font-medium">
+                    <SymbolLink symbol={r.symbol}>{r.symbol}</SymbolLink>
+                  </td>
                   <td className="py-2 pr-4 text-right tabular-nums">{usdMasked(r.lastMonth, privacy.masked)}</td>
                   <td className="py-2 pr-4 text-right tabular-nums">{usdMasked(r.nextMonth, privacy.masked)}</td>
                   <td className="py-2 pr-4 text-right tabular-nums">{usdMasked(r.nextYearProjected, privacy.masked)}</td>

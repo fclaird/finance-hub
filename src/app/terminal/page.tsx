@@ -1,7 +1,6 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { Line, LineChart, ResponsiveContainer } from "recharts";
 
@@ -9,10 +8,10 @@ import { usePrivacy } from "@/app/components/PrivacyProvider";
 import { useEquityMarketPolling } from "@/hooks/useEquityMarketPolling";
 import { isUsEquityPreOpenFuturesPollWindow, isUsEquityRegularSessionOpen } from "@/lib/market/usEquitySession";
 import { HeatmapGrid, type HeatmapItem } from "@/app/components/HeatmapGrid";
-import { XDataAgeBanner } from "@/app/components/terminal/XDataAgeBanner";
-import { XNewsSection } from "@/app/components/terminal/XNewsSection";
-import type { XDigestPayload } from "@/lib/x/types";
+import { TerminalPositionTreemap } from "@/app/components/terminal/TerminalPositionTreemap";
+import { SymbolLink } from "@/app/components/SymbolLink";
 import { formatUsd2 } from "@/lib/format";
+import { heatmapCellStyle } from "@/lib/terminal/dailyPerfColor";
 import { posNegClass, priceDirClass } from "@/lib/terminal/colors";
 
 type WatchlistRow = { id: string; name: string; createdAt: string; itemCount: number };
@@ -71,22 +70,8 @@ function clamp(n: number, lo: number, hi: number) {
 }
 
 function pctToTileStyle(pct: number | null): CSSProperties | undefined {
-  if (pct == null || !Number.isFinite(pct)) return undefined;
-  const cap = 8;
-  const t = clamp(Math.abs(pct) / cap, 0, 1);
-  // Emerald-400 / red-400 — reads clearly on near-black UIs
-  const base = pct >= 0 ? "52,211,153" : "248,113,113";
-  const a1 = 0.26 + 0.32 * t;
-  const a2 = 0.11 + 0.22 * t;
-  const a3 = Math.max(a2 - 0.07, 0.06);
-  const glowA = 0.22 + 0.28 * t;
-  return {
-    background: `linear-gradient(145deg, rgba(${base},${a1}) 0%, rgba(${base},${a2}) 52%, rgba(${base},${a3}) 100%)`,
-    borderColor: pct >= 0 ? `rgba(52,211,153,${0.35 + 0.25 * t})` : `rgba(248,113,113,${0.35 + 0.25 * t})`,
-    boxShadow: pct >= 0
-      ? `0 0 28px -6px rgba(52,211,153,${glowA * 0.45}), inset 0 1px 0 0 rgba(255,255,255,${0.1 + 0.12 * t})`
-      : `0 0 28px -6px rgba(248,113,113,${glowA * 0.45}), inset 0 1px 0 0 rgba(255,255,255,${0.08 + 0.08 * t})`,
-  };
+  if (pct == null || !Number.isFinite(pct)) return heatmapCellStyle(null);
+  return heatmapCellStyle(pct / 100);
 }
 
 /** Horizontal vivid strip behind mover / volume rows (dark theme). */
@@ -149,7 +134,6 @@ function SortTh({
 }
 
 export default function TerminalPage() {
-  const router = useRouter();
   const privacy = usePrivacy();
   const [watchlists, setWatchlists] = useState<WatchlistRow[]>([]);
   const [watchlistId, setWatchlistId] = useState<string | null>(null);
@@ -165,15 +149,10 @@ export default function TerminalPage() {
   const [sortAsc, setSortAsc] = useState(false);
   const [colOrder, setColOrder] = useState<TerminalCol[]>(DEFAULT_TERMINAL_COL_ORDER);
   const [companyBySymbol, setCompanyBySymbol] = useState<Map<string, string>>(new Map());
-  const [news, setNews] = useState<
-    Array<{ title: string; link: string; pubDate: string; symbols: string[]; category: string; source?: string }>
-  >([]);
-  const [xDigest, setXDigest] = useState<Pick<XDigestPayload, "sections" | "posts" | "generatedAt"> | null>(null);
-  const [xDigestLoading, setXDigestLoading] = useState(false);
-  const [xDigestError, setXDigestError] = useState<string | null>(null);
   const [volumeLeadersMode, setVolumeLeadersMode] = useState<"volume" | "volX">("volume");
   const [heatView, setHeatView] = useState<"portfolio" | "spy" | "qqq">("portfolio");
   const [heatItems, setHeatItems] = useState<HeatmapItem[]>([]);
+  const [positionMvBySym, setPositionMvBySym] = useState<Map<string, number>>(() => new Map());
   const [quick, setQuick] = useState<QuickGlance | null>(null);
   const [futuresItems, setFuturesItems] = useState<
     Array<{ symbol: string; quote: NormalizedQuote; series: Array<{ date: string; close: number }> }>
@@ -182,7 +161,6 @@ export default function TerminalPage() {
 
   const heatInit = useRef(false);
   const volInit = useRef(false);
-  const newsInit = useRef(false);
   const heatViewPrimed = useRef(false);
 
   async function loadWatchlists() {
@@ -263,56 +241,6 @@ export default function TerminalPage() {
     const m = new Map<string, VolumeInfo>();
     for (const [k, v] of Object.entries(json.anomalies ?? {})) m.set(k.toUpperCase(), v);
     setVolumeInfo(m);
-  }
-
-  async function loadNews(symList: string[]) {
-    const focus = symList.slice(0, 8).join(",");
-    const anoms = Array.from(volumeInfo.entries())
-      .filter(([, v]) => v.flagged)
-      .map(([k]) => k)
-      .slice(0, 8)
-      .join(",");
-    const qs = `?symbols=${encodeURIComponent(focus)}&anomalies=${encodeURIComponent(anoms)}`;
-    const resp = await fetch(`/api/terminal/news${qs}`, { cache: "no-store" });
-    const json = (await resp.json()) as { ok: boolean; items?: typeof news; error?: string };
-    if (!json.ok) throw new Error(json.error ?? "Failed to load news");
-    setNews(json.items ?? []);
-  }
-
-  async function fetchXDigestFromX() {
-    setXDigestError(null);
-    setXDigestLoading(true);
-    try {
-      const resp = await fetch("/api/terminal/x-digest/refresh", { method: "POST" });
-      const json = (await resp.json()) as {
-        ok: boolean;
-        error?: string;
-        empty?: boolean;
-        sections?: XDigestPayload["sections"];
-        posts?: XDigestPayload["posts"];
-        generatedAt?: string;
-      };
-      if (!json.ok) {
-        setXDigest(null);
-        setXDigestError(json.error ?? "Failed to refresh X digest");
-        return;
-      }
-      const generatedAt = json.generatedAt ?? new Date().toISOString();
-      if (json.empty || !json.sections?.length) {
-        setXDigest({ sections: [], posts: json.posts ?? {}, generatedAt });
-        return;
-      }
-      setXDigest({
-        sections: json.sections,
-        posts: json.posts ?? {},
-        generatedAt,
-      });
-    } catch (e) {
-      setXDigest(null);
-      setXDigestError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setXDigestLoading(false);
-    }
   }
 
   async function loadHeatmap(nextWatchlistId: string | null) {
@@ -503,7 +431,10 @@ export default function TerminalPage() {
             ok: boolean;
             positions?: Array<{ symbol: string | null; marketValue: number | null }>;
           };
-          if (!posJson.ok) return;
+          if (!posJson.ok) {
+            setPositionMvBySym(new Map());
+            return;
+          }
           const mvBySym = new Map<string, number>();
           for (const p of posJson.positions ?? []) {
             const sym = (p.symbol ?? "").toUpperCase().trim();
@@ -512,6 +443,8 @@ export default function TerminalPage() {
             if (mv == null || !Number.isFinite(mv) || mv === 0) continue;
             mvBySym.set(sym, (mvBySym.get(sym) ?? 0) + mv);
           }
+
+          setPositionMvBySym(mvBySym);
 
           const qMap = new Map<string, NormalizedQuote>();
           for (const q of quotes) qMap.set(q.symbol.toUpperCase(), q);
@@ -569,18 +502,6 @@ export default function TerminalPage() {
     }, 0);
     return () => clearTimeout(t);
   }, [symbols]);
-
-  useEffect(() => {
-    if (symbols.length === 0) return;
-    const open = isUsEquityRegularSessionOpen(new Date());
-    if (!open && newsInit.current) return;
-    newsInit.current = true;
-    const t = setTimeout(() => {
-      void loadNews(symbols).catch(() => null);
-    }, 0);
-    return () => clearTimeout(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [symbols, volumeInfo]);
 
   useEffect(() => {
     let five: ReturnType<typeof setInterval> | null = null;
@@ -764,7 +685,11 @@ export default function TerminalPage() {
                   key={row.symbol}
                   className="rounded-xl border border-zinc-300 bg-white/70 p-3 dark:border-white/20 dark:bg-black/20"
                 >
-                  <div className="font-mono text-sm font-semibold text-zinc-900 dark:text-zinc-100">{row.symbol}</div>
+                  <div className="font-mono text-sm font-semibold text-zinc-900 dark:text-zinc-100">
+                    <SymbolLink symbol={row.symbol} className="font-mono font-semibold hover:no-underline">
+                      {row.symbol}
+                    </SymbolLink>
+                  </div>
                   <div className="mt-1 grid grid-cols-2 gap-1 text-xs tabular-nums text-zinc-700 dark:text-zinc-300">
                     <div>Last</div>
                     <div className="text-right font-medium">{last == null ? "—" : last.toFixed(2)}</div>
@@ -827,7 +752,7 @@ export default function TerminalPage() {
         <details open className="mt-4 rounded-xl border border-zinc-300 bg-white/60 p-4 dark:border-white/20 dark:bg-black/20">
           <summary className="cursor-pointer list-none">
             <div className="flex flex-wrap items-center justify-between gap-3">
-              <div className="text-sm font-semibold">Market heatmap (cap-weighted)</div>
+              <div className="text-sm font-semibold">Market heatmap (tile size ∝ cap, color = day %)</div>
               <div className="flex items-center gap-1">
                 {(
                   [
@@ -857,12 +782,21 @@ export default function TerminalPage() {
             </div>
           </summary>
           <div className="mt-3 min-w-0">
-            <HeatmapGrid items={heatItems.slice(0, 220)} onPick={(s) => router.push(`/terminal/symbol/${encodeURIComponent(s)}`)} />
+            <HeatmapGrid items={heatItems.slice(0, 220)} />
             {heatItems.length === 0 ? <div className="mt-2 text-sm text-zinc-600 dark:text-zinc-400">No heatmap data yet.</div> : null}
+          </div>
+          <div className="mt-6 min-w-0 border-t border-zinc-200 pt-4 dark:border-white/10">
+            <div className="text-sm font-semibold text-zinc-800 dark:text-zinc-200">Position treemap (size = weight, color = day %)</div>
+            <p className="mt-1 text-xs leading-relaxed text-zinc-500 dark:text-zinc-400">
+              Same daily % scale as the heatmap; mid-range moves are stretched so small differences read more clearly.
+            </p>
+            <div className="mt-3">
+              <TerminalPositionTreemap items={heatItems} mvBySymbol={positionMvBySym} heatView={heatView} />
+            </div>
           </div>
         </details>
 
-        <div className="mt-4 grid min-w-0 grid-cols-1 items-start gap-4 lg:grid-cols-[minmax(0,1fr)_380px]">
+        <div className="mt-4 grid min-w-0 grid-cols-1 items-start gap-4">
           <div className="flex min-w-0 flex-col gap-4">
             <div className="min-w-0 overflow-x-auto rounded-xl ring-1 ring-zinc-300 dark:ring-white/20">
             <table className="w-full border-collapse text-sm">
@@ -943,14 +877,13 @@ export default function TerminalPage() {
                     <tr
                       key={q.symbol}
                       className="border-b border-zinc-200 hover:bg-zinc-50/70 dark:border-white/20 dark:hover:bg-white/5"
-                      onClick={() => router.push(`/terminal/symbol/${encodeURIComponent(q.symbol)}`)}
                     >
                       {colOrder.map((c) => {
                         switch (c) {
                           case "symbol":
                             return (
                               <td key={c} className="py-2 pr-4 font-semibold">
-                                <span className="hover:underline underline-offset-4">{q.symbol}</span>
+                                <SymbolLink symbol={q.symbol}>{q.symbol}</SymbolLink>
                               </td>
                             );
                           case "company": {
@@ -1001,78 +934,6 @@ export default function TerminalPage() {
               </tbody>
             </table>
             </div>
-
-            <div className="flex min-w-0 flex-col gap-4">
-              <div className="rounded-xl border border-zinc-300 bg-white/60 p-4 dark:border-white/20 dark:bg-black/20">
-                <div className="flex flex-wrap items-center justify-between gap-3">
-                  <div className="text-sm font-semibold">X digest</div>
-                  <button
-                    type="button"
-                    disabled={xDigestLoading}
-                    onClick={() => void fetchXDigestFromX()}
-                    className="rounded-full border border-zinc-300 bg-white px-4 py-2 text-sm font-medium text-zinc-900 shadow-sm hover:bg-zinc-50 disabled:opacity-50 dark:border-white/20 dark:bg-zinc-950 dark:text-zinc-100 dark:hover:bg-white/5"
-                  >
-                    {xDigestLoading ? "Fetching…" : "Fetch from X"}
-                  </button>
-                </div>
-                <p className="mt-2 text-xs text-zinc-600 dark:text-zinc-400">
-                  Loads your home timeline (24h), updates the local digest cache, and shows themed ideas. Not run automatically.
-                </p>
-                {xDigestError ? (
-                  <div className="mt-2 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-800 dark:bg-red-950/40 dark:text-red-200">
-                    {xDigestError}
-                  </div>
-                ) : null}
-                {xDigest?.generatedAt ? (
-                  <div className="mt-3">
-                    <XDataAgeBanner generatedAt={xDigest.generatedAt} />
-                  </div>
-                ) : null}
-              </div>
-              {xDigest && xDigest.sections.length > 0 ? (
-                <XNewsSection variant="digest" payload={xDigest} showTitle={false} />
-              ) : xDigest && xDigest.sections.length === 0 ? (
-                <XNewsSection
-                  variant="digest"
-                  payload={xDigest}
-                  showTitle={false}
-                  emptyMessage="Fetch completed but no themed sections were produced (empty 24h window or summarizer output)."
-                />
-              ) : null}
-              <div className="min-w-0 rounded-2xl border border-zinc-300 bg-white p-4 shadow-sm dark:border-white/20 dark:bg-zinc-950">
-                <div className="text-sm font-semibold">News</div>
-                <div className="mt-2 grid gap-2">
-                  {news.slice(0, 10).map((n) => (
-                    <a
-                      key={n.link}
-                      href={n.link}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="rounded-lg border border-zinc-300 bg-white/70 px-3 py-2 text-sm hover:bg-zinc-50 dark:border-white/20 dark:bg-zinc-950 dark:hover:bg-white/5"
-                    >
-                      <div className="flex items-start justify-between gap-3">
-                        <div className="min-w-0">
-                          <div className="flex flex-wrap items-center gap-2">
-                            <span className="truncate font-semibold">{n.title}</span>
-                            {n.source ? (
-                              <span className="shrink-0 rounded-full bg-zinc-200 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-zinc-800 dark:bg-white/15 dark:text-zinc-200">
-                                {n.source}
-                              </span>
-                            ) : null}
-                          </div>
-                          <div className="mt-1 text-xs text-zinc-600 dark:text-zinc-400">
-                            {(n.category === "highVolume" ? "High volume" : n.category === "watchlist" ? "Watchlist" : "Macro") +
-                              (n.symbols?.length ? ` • ${n.symbols.slice(0, 4).join(",")}` : "")}
-                          </div>
-                        </div>
-                        <div className="shrink-0 text-xs text-zinc-500 dark:text-zinc-400">{n.pubDate ? n.pubDate.slice(0, 16) : ""}</div>
-                      </div>
-                    </a>
-                  ))}
-                  {news.length === 0 ? <div className="text-sm text-zinc-600 dark:text-zinc-400">No headlines yet.</div> : null}
-                </div>
-              </div>
-            </div>
           </div>
 
           <div className="flex min-w-0 flex-col gap-4">
@@ -1087,19 +948,18 @@ export default function TerminalPage() {
                   <div className="text-[11px] font-semibold text-zinc-600 dark:text-zinc-400">Top gainers</div>
                   <div className="mt-1 grid gap-1">
                     {(movers?.gainers ?? []).slice(0, 8).map((q) => (
-                      <button
+                      <SymbolLink
                         key={q.symbol}
-                        type="button"
-                        onClick={() => router.push(`/terminal/symbol/${encodeURIComponent(q.symbol)}`)}
+                        symbol={q.symbol}
                         style={sentimentRowBackground(q.changePercent)}
-                        className="relative flex w-full items-center justify-between overflow-hidden rounded-md border border-zinc-300 bg-white/70 px-2 py-1 text-xs dark:border-white/15 dark:bg-zinc-950/40"
                         title="Open symbol"
+                        className="relative flex w-full items-center justify-between overflow-hidden rounded-md border border-zinc-300 bg-white/70 px-2 py-1 text-xs hover:no-underline dark:border-white/15 dark:bg-zinc-950/40"
                       >
                         <span className="font-semibold">{q.symbol}</span>
                         <span className={"tabular-nums " + posNegClass(q.changePercent == null ? null : q.changePercent * 100)}>
                           {q.changePercent == null ? "—" : PCT2.format(q.changePercent * 100) + "%"}
                         </span>
-                      </button>
+                      </SymbolLink>
                     ))}
                   </div>
                 </div>
@@ -1107,19 +967,18 @@ export default function TerminalPage() {
                   <div className="text-[11px] font-semibold text-zinc-600 dark:text-zinc-400">Top losers</div>
                   <div className="mt-1 grid gap-1">
                     {(movers?.losers ?? []).slice(0, 8).map((q) => (
-                      <button
+                      <SymbolLink
                         key={q.symbol}
-                        type="button"
-                        onClick={() => router.push(`/terminal/symbol/${encodeURIComponent(q.symbol)}`)}
+                        symbol={q.symbol}
                         style={sentimentRowBackground(q.changePercent)}
-                        className="relative flex w-full items-center justify-between overflow-hidden rounded-md border border-zinc-300 bg-white/70 px-2 py-1 text-xs dark:border-white/15 dark:bg-zinc-950/40"
                         title="Open symbol"
+                        className="relative flex w-full items-center justify-between overflow-hidden rounded-md border border-zinc-300 bg-white/70 px-2 py-1 text-xs hover:no-underline dark:border-white/15 dark:bg-zinc-950/40"
                       >
                         <span className="font-semibold">{q.symbol}</span>
                         <span className={"tabular-nums " + posNegClass(q.changePercent == null ? null : q.changePercent * 100)}>
                           {q.changePercent == null ? "—" : PCT2.format(q.changePercent * 100) + "%"}
                         </span>
-                      </button>
+                      </SymbolLink>
                     ))}
                   </div>
                 </div>
@@ -1137,18 +996,17 @@ export default function TerminalPage() {
                 ) : null}
                 <div className="mt-2 grid gap-1">
                   {(optionFlow?.items ?? []).slice(0, 10).map((it) => (
-                    <button
+                    <SymbolLink
                       key={it.symbol}
-                      type="button"
-                      onClick={() => router.push(`/terminal/symbol/${encodeURIComponent(it.symbol)}`)}
-                      className="flex w-full items-center justify-between rounded-md border border-zinc-300 bg-white/70 px-2 py-1.5 text-xs dark:border-white/15 dark:bg-zinc-950/40"
+                      symbol={it.symbol}
                       title="Open symbol"
+                      className="flex w-full items-center justify-between rounded-md border border-zinc-300 bg-white/70 px-2 py-1.5 text-xs hover:no-underline dark:border-white/15 dark:bg-zinc-950/40"
                     >
                       <span className="font-semibold">{it.symbol}</span>
                       <span className="tabular-nums text-zinc-700 dark:text-zinc-300">
                         {Math.round(it.totalOptionVolume).toLocaleString()} opt vol
                       </span>
-                    </button>
+                    </SymbolLink>
                   ))}
                   {optionFlow?.ok && (optionFlow.items?.length ?? 0) === 0 && optionFlow.source === "schwab" ? (
                     <div className="text-sm text-zinc-600 dark:text-zinc-400">No chain volume in the scanned set.</div>
@@ -1192,13 +1050,12 @@ export default function TerminalPage() {
                 <div className="mt-1 text-[11px] text-zinc-600 dark:text-zinc-400">From your terminal universe (portfolio + watchlist overlay)</div>
                 <div className="mt-2 grid gap-1">
                   {volumeLeaders.slice(0, 8).map(({ q, vol, ratio, flagged }) => (
-                    <button
+                    <SymbolLink
                       key={q.symbol}
-                      type="button"
-                      onClick={() => router.push(`/terminal/symbol/${encodeURIComponent(q.symbol)}`)}
+                      symbol={q.symbol}
                       style={sentimentRowBackground(q.changePercent)}
-                      className="relative flex w-full items-center justify-between overflow-hidden rounded-md border border-zinc-300 bg-white/70 px-2 py-1 text-xs dark:border-white/15 dark:bg-zinc-950/40"
-                      title="Set active symbol"
+                      title="Open symbol"
+                      className="relative flex w-full items-center justify-between overflow-hidden rounded-md border border-zinc-300 bg-white/70 px-2 py-1 text-xs hover:no-underline dark:border-white/15 dark:bg-zinc-950/40"
                     >
                       <span className="font-semibold">{q.symbol}</span>
                       <span className="flex items-center gap-2 tabular-nums">
@@ -1210,7 +1067,7 @@ export default function TerminalPage() {
                         </span>
                         <span className="text-zinc-700 dark:text-zinc-300">{vol == null ? "—" : Math.round(vol).toLocaleString()}</span>
                       </span>
-                    </button>
+                    </SymbolLink>
                   ))}
                   {volumeLeaders.length === 0 ? <div className="text-sm text-zinc-600 dark:text-zinc-400">No volume data yet.</div> : null}
                 </div>

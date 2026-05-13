@@ -6,6 +6,8 @@ import { newId } from "@/lib/id";
 import { logError } from "@/lib/log";
 import { DATA_MODE_COOKIE, parseDataMode } from "@/lib/dataMode";
 import { ensureBenchmarkHistory } from "@/lib/market/benchmarks";
+import { lastCompletedNyWeekday } from "@/lib/analytics/allocationNyDate";
+import { recordAllocationDailyCloseModes } from "@/lib/analytics/recordAllocationDailyClose";
 import { upsertWeekEndingPortfolioSnapshots } from "@/lib/portfolio/snapshots";
 import { schwabFetch } from "@/lib/schwab/client";
 
@@ -273,6 +275,7 @@ export async function POST() {
       await ensureBenchmarkHistory("SPY");
       await ensureBenchmarkHistory("QQQ");
       upsertWeekEndingPortfolioSnapshots(db, mode, "weekly_job");
+      recordAllocationDailyCloseModes(db, lastCompletedNyWeekday(), [mode]);
     } catch (e) {
       logError("portfolio_snapshot_after_schwab_sync", e);
     }

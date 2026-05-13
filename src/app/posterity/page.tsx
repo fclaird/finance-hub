@@ -3,17 +3,21 @@
 import Link from "next/link";
 import { Fragment, useEffect, useMemo, useState } from "react";
 
+import { ExposurePositionTreemap } from "@/app/components/charts/ExposurePositionTreemap";
 import { FinancePiePanel } from "@/app/components/FinancePiePanel";
+import { SymbolLink } from "@/app/components/SymbolLink";
 import { usePrivacy } from "@/app/components/PrivacyProvider";
 import { formatInt, formatNum, formatUsd2 } from "@/lib/format";
 import { POSTERITY_ACCOUNT_IDS } from "@/lib/posterity";
+import { symbolPageTargetFromInstrument } from "@/lib/symbolPage";
+import { normalizeSectorLabel } from "@/lib/sectorLabel";
 
 type TaxonomyCategory = "sector" | "marketCap" | "revenueGeo";
 
 type TaxonomyRow = {
   sector: string | null;
   industry: string | null;
-  marketCapBucket: string | null;
+  marketCap: number | null;
   revenueGeoBucket: string | null;
   source: string | null;
   updatedAt: string;
@@ -36,8 +40,6 @@ type RolledSlice = {
 
 const BTN_CLASSES =
   "flex h-8 w-full min-w-0 items-center justify-center whitespace-nowrap rounded-md px-2 text-xs font-semibold tracking-tight";
-
-const PCT2 = new Intl.NumberFormat(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
 async function readApiJson<T extends { ok?: boolean }>(resp: Response): Promise<T> {
   const text = await resp.text();
@@ -70,10 +72,10 @@ function usd2Masked(v: number, masked: boolean) {
 
 function taxonomyBucket(map: Map<string, TaxonomyRow>, sym: string, category: TaxonomyCategory): string {
   const s = (sym ?? "").trim().toUpperCase();
+  if (category === "marketCap") return s;
   const t = map.get(s);
   if (!t) return "Unknown";
-  if (category === "sector") return t.sector ?? "Unknown";
-  if (category === "marketCap") return t.marketCapBucket ?? "Unknown";
+  if (category === "sector") return normalizeSectorLabel(t.sector);
   return t.revenueGeoBucket ?? "Unknown";
 }
 
@@ -212,6 +214,43 @@ export default function PosterityPage() {
 
   const rolled = useMemo(() => rollupCategory(exposure, category, tax), [exposure, category, tax]);
 
+  const capBySymbol = useMemo(() => {
+    const m = new Map<string, number | null>();
+    for (const [sym, row] of tax) m.set(sym, row.marketCap ?? null);
+    return m;
+  }, [tax]);
+
+  useEffect(() => {
+    if (category !== "marketCap") return;
+    const syms = Array.from(new Set(exposure.map((r) => r.underlyingSymbol.trim().toUpperCase()).filter(Boolean)));
+    if (syms.length === 0) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        await fetch("/api/taxonomy/sync", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ symbols: syms, refreshMarketCapsFromSchwab: true }),
+        });
+        const txResp = await fetch(`/api/taxonomy?symbols=${encodeURIComponent(syms.join(","))}`, { cache: "no-store" });
+        const txJson = await readApiJson<{ ok: boolean; taxonomy?: Record<string, TaxonomyRow> }>(txResp);
+        if (cancelled) return;
+        setTax((prev) => {
+          const next = new Map(prev);
+          for (const [k, v] of Object.entries(txJson.taxonomy ?? {})) {
+            next.set(k.toUpperCase(), v as TaxonomyRow);
+          }
+          return next;
+        });
+      } catch {
+        /* ignore */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [category, exposure, accountId]);
+
   const posGroups = useMemo(() => {
     const m = new Map<string, PosterityPosition[]>();
     for (const p of positions) {
@@ -225,7 +264,7 @@ export default function PosterityPage() {
   }, [positions]);
 
   return (
-    <div className="flex w-full max-w-6xl flex-1 flex-col gap-6 py-8 pl-4 pr-6">
+    <div className="flex w-full max-w-[108rem] flex-1 flex-col gap-8 py-10 pl-5 pr-6 sm:pl-6 sm:pr-8">
       <div className="flex items-start justify-between gap-4">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Posterity</h1>
@@ -338,55 +377,31 @@ export default function PosterityPage() {
           </div>
 
           <div className="min-w-0">
-            <FinancePiePanel
-              title={`${category === "sector" ? "Sector" : category === "marketCap" ? "Market cap" : "Revenue geo"} · Spot`}
-              buckets={[
-                {
-                  label: "tax",
-                  totalMarketValue: rolled.total,
-                  byAsset: rolled.rows.map((r) => ({
-                    key: r.key,
-                    marketValue: r.mv,
-                    weight: rolled.total ? r.mv / rolled.total : 0,
-                    constituents: r.constituents,
-                  })),
-                },
-              ]}
-            />
+            {category === "marketCap" ? (
+              <ExposurePositionTreemap
+                leaves={rolled.rows.flatMap((r) => r.constituents)}
+                underlyingMarketCapBySymbol={capBySymbol}
+                masked={privacy.masked}
+                title="Market cap · Spot"
+              />
+            ) : (
+              <FinancePiePanel
+                title={`${category === "sector" ? "Sector" : "Revenue geo"} · Spot`}
+                buckets={[
+                  {
+                    label: "tax",
+                    totalMarketValue: rolled.total,
+                    byAsset: rolled.rows.map((r) => ({
+                      key: r.key,
+                      marketValue: r.mv,
+                      weight: rolled.total ? r.mv / rolled.total : 0,
+                      constituents: r.constituents,
+                    })),
+                  },
+                ]}
+              />
+            )}
 
-            <div className="mt-4 overflow-hidden rounded-xl ring-1 ring-zinc-300 dark:ring-white/20">
-              <table className="w-full border-collapse text-sm">
-                <thead className="bg-zinc-50 text-left dark:bg-zinc-900/40">
-                  <tr>
-                    <th className="whitespace-nowrap px-3 py-2 font-semibold">Bucket</th>
-                    <th className="whitespace-nowrap px-3 py-2 text-right font-semibold">Weight</th>
-                    <th className="whitespace-nowrap px-3 py-2 text-right font-semibold">Market value</th>
-                    <th className="whitespace-nowrap px-3 py-2 font-semibold">Top constituents</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {rolled.rows.slice(0, 30).map((r) => (
-                    <tr key={r.key} className="border-t border-zinc-200 dark:border-white/10">
-                      <td className="whitespace-nowrap px-3 py-2 font-medium">{r.key}</td>
-                      <td className="whitespace-nowrap px-3 py-2 text-right tabular-nums">{PCT2.format(r.weight * 100)}%</td>
-                      <td className="whitespace-nowrap px-3 py-2 text-right tabular-nums">
-                        {usd2Masked(r.mv, privacy.masked)}
-                      </td>
-                      <td className="px-3 py-2 text-xs text-zinc-700 dark:text-zinc-300">
-                        {r.constituents.slice(0, 6).map((c) => c.symbol).join(", ")}
-                      </td>
-                    </tr>
-                  ))}
-                  {rolled.rows.length === 0 ? (
-                    <tr className="border-t border-zinc-200 dark:border-white/10">
-                      <td className="px-3 py-3 text-sm text-zinc-600 dark:text-zinc-400" colSpan={4}>
-                        No exposure rows yet for this account.
-                      </td>
-                    </tr>
-                  ) : null}
-                </tbody>
-              </table>
-            </div>
           </div>
         </div>
       </section>
@@ -414,7 +429,9 @@ export default function PosterityPage() {
                       key={`${g.underlying}__header`}
                       className="border-t border-zinc-200 bg-zinc-50/60 dark:border-white/10 dark:bg-white/5"
                     >
-                      <td className="whitespace-nowrap px-3 py-2 font-semibold">{g.underlying}</td>
+                      <td className="whitespace-nowrap px-3 py-2 font-semibold">
+                        <SymbolLink symbol={g.underlying}>{g.underlying}</SymbolLink>
+                      </td>
                       <td className="px-3 py-2 text-xs text-zinc-600 dark:text-zinc-400" colSpan={2}>
                         {g.rows.length} positions
                       </td>
@@ -424,9 +441,13 @@ export default function PosterityPage() {
                     </tr>
                     {g.rows.map((p) => (
                       <tr key={p.positionId} className="border-t border-zinc-200 dark:border-white/10">
-                        <td className="whitespace-nowrap px-3 py-2 text-zinc-600 dark:text-zinc-400">{g.underlying}</td>
+                        <td className="whitespace-nowrap px-3 py-2 text-zinc-600 dark:text-zinc-400">
+                          <SymbolLink symbol={g.underlying}>{g.underlying}</SymbolLink>
+                        </td>
                         <td className="whitespace-nowrap px-3 py-2 font-medium">
-                          {p.securityType === "option" ? formatOptLabel(p) : (p.symbol ?? "").toString().toUpperCase()}
+                          <SymbolLink symbol={symbolPageTargetFromInstrument(p)}>
+                            {p.securityType === "option" ? formatOptLabel(p) : (p.symbol ?? "").toString().toUpperCase()}
+                          </SymbolLink>
                         </td>
                         <td className="whitespace-nowrap px-3 py-2 text-right tabular-nums">
                           {formatInt(p.quantity ?? 0)}

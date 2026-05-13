@@ -47,6 +47,7 @@ export function parseSchwabInstrumentFundamental(resp: unknown, symbol: string):
       : null) ?? {};
 
   const companyName =
+    getString(fundamental, "companyName") ??
     getString(entry, "description") ??
     getString(fundamental, "description") ??
     null;
@@ -57,7 +58,13 @@ export function parseSchwabInstrumentFundamental(resp: unknown, symbol: string):
     industry: getString(fundamental, "industry"),
     marketCap: asNumber(fundamental["marketCap"]),
     pe: asNumber(fundamental["peRatio"]),
-    divYield: asNumber(fundamental["divYield"]),
+    divYield: (() => {
+      const v = asNumber(fundamental["divYield"]);
+      if (v == null || !Number.isFinite(v)) return null;
+      // Schwab sometimes reports percent points (e.g. 3.2) instead of decimal yield.
+      if (v > 1 && v <= 100) return v / 100;
+      return v;
+    })(),
     beta: asNumber(fundamental["beta"]),
     week52High: asNumber(fundamental["high52"]),
     week52Low: asNumber(fundamental["low52"]),

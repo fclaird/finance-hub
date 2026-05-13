@@ -1,8 +1,12 @@
 "use client";
 
 import { Fragment } from "react";
-import { formatInt, formatNum, formatUsd2 } from "@/lib/format";
+import { DraggableColumnHeader, DRAGGABLE_COLUMN_HEADER_GRAB_CLASS } from "@/app/components/DraggableColumnHeader";
+import { SymbolLink } from "@/app/components/SymbolLink";
+import { formatInt, formatNum, formatOptionIntExtPerShare, formatUsd2 } from "@/lib/format";
 import { formatOptionSymbolDisplay } from "@/lib/formatOptionDisplay";
+import { symbolPageTargetFromInstrument } from "@/lib/symbolPage";
+import { usePersistedColumnOrder } from "@/lib/usePersistedColumnOrder";
 import { posNegClass } from "@/lib/terminal/colors";
 
 export type Row = {
@@ -57,6 +61,43 @@ export type SortColumn =
   | "dte"
   | "intrinsic"
   | "extrinsic";
+
+/** Includes optional Account column (per-account view). */
+export type PositionsTableColumnId = "account" | SortColumn;
+
+const POSITIONS_COL_ORDER_NO_ACCOUNT: readonly SortColumn[] = [
+  "symbol",
+  "quantity",
+  "price",
+  "marketValue",
+  "delta",
+  "gamma",
+  "theta",
+  "dte",
+  "intrinsic",
+  "extrinsic",
+];
+
+const POSITIONS_COL_ORDER_WITH_ACCOUNT: readonly PositionsTableColumnId[] = [
+  "account",
+  ...POSITIONS_COL_ORDER_NO_ACCOUNT,
+];
+
+const SORT_COLUMN_LABEL: Record<SortColumn, string> = {
+  symbol: "Symbol",
+  quantity: "Qty",
+  price: "Price",
+  marketValue: "Market\u00A0value",
+  delta: "Delta",
+  gamma: "Gamma",
+  theta: "Theta",
+  dte: "DTE",
+  intrinsic: "Intrinsic",
+  extrinsic: "Extrinsic",
+};
+
+const POSITIONS_TH_STICKY =
+  "sticky top-0 z-20 whitespace-nowrap border-b border-zinc-300 bg-zinc-50 py-2 pr-6 font-medium dark:border-white/20 dark:bg-zinc-950 ";
 
 function symbolSortKey(r: Row) {
   return r.securityType === "option" ? formatOptionSymbol(r) : r.symbol;
@@ -146,37 +187,196 @@ export function GroupedTable({
     return collapsed.has(`${viewMode}:${accountId}:${underlying}`);
   }
 
+  const columnStorageKey = showAccountCol ? "positions:grouped:v1:withAccount" : "positions:grouped:v1:noAccount";
+  const columnDefaultOrder = showAccountCol ? POSITIONS_COL_ORDER_WITH_ACCOUNT : POSITIONS_COL_ORDER_NO_ACCOUNT;
+  const { order: columnOrder, moveColumn } = usePersistedColumnOrder(columnStorageKey, columnDefaultOrder);
+
+  const grab = " " + DRAGGABLE_COLUMN_HEADER_GRAB_CLASS;
+
+  function headerCell(colId: PositionsTableColumnId) {
+    if (colId === "account") {
+      return (
+        <DraggableColumnHeader
+          key={colId}
+          colId={colId}
+          columnOrder={columnOrder}
+          moveColumn={moveColumn}
+          className={POSITIONS_TH_STICKY + "text-left text-zinc-600 dark:text-zinc-400" + grab}
+        >
+          Account
+        </DraggableColumnHeader>
+      );
+    }
+    const col = colId as SortColumn;
+    const align = col === "symbol" ? "left" : "right";
+    const thAlign = align === "right" ? "text-right" : "text-left";
+    const active = sortColumn === col;
+    return (
+      <DraggableColumnHeader
+        key={colId}
+        colId={colId}
+        columnOrder={columnOrder}
+        moveColumn={moveColumn}
+        className={POSITIONS_TH_STICKY + thAlign + grab}
+        aria-sort={active ? (sortAsc ? "ascending" : "descending") : "none"}
+      >
+        <SortThButton
+          col={col}
+          label={SORT_COLUMN_LABEL[col]}
+          sortColumn={sortColumn}
+          sortAsc={sortAsc}
+          onToggle={toggleSort}
+          align={align}
+        />
+      </DraggableColumnHeader>
+    );
+  }
+
+  function groupEmDashTd(colId: PositionsTableColumnId) {
+    return (
+      <td key={colId} className="whitespace-nowrap py-2 pr-6 text-right tabular-nums text-zinc-500 dark:text-zinc-400">
+        —
+      </td>
+    );
+  }
+
+  function groupRowCell(colId: PositionsTableColumnId, g: UnderlyingGroup, collapsedNow: boolean) {
+    const caret = collapsedNow ? "▸" : "▾";
+    switch (colId) {
+      case "account":
+        return <td key={colId} className="whitespace-nowrap py-2 pr-6 text-xs text-zinc-600 dark:text-zinc-400" />;
+      case "symbol":
+        return (
+          <td key={colId} className="whitespace-nowrap py-2 pr-6 font-semibold">
+            <span className="inline-flex items-center gap-2">
+              <span className="w-4 text-zinc-500 dark:text-zinc-400">{caret}</span>
+              <SymbolLink symbol={g.underlying} className="font-semibold text-zinc-900 dark:text-zinc-100">
+                {g.underlying}
+              </SymbolLink>
+            </span>
+          </td>
+        );
+      case "quantity":
+      case "price":
+        return groupEmDashTd(colId);
+      case "marketValue":
+        return (
+          <td
+            key={colId}
+            className={
+              "whitespace-nowrap py-2 pr-6 text-right tabular-nums font-semibold " + posNegClass(g.netMarketValue)
+            }
+          >
+            {usd2Masked(g.netMarketValue, privacyMasked)}
+          </td>
+        );
+      case "delta":
+      case "gamma":
+      case "theta":
+      case "dte":
+      case "intrinsic":
+      case "extrinsic":
+        return groupEmDashTd(colId);
+      default:
+        return null;
+    }
+  }
+
+  function dataRowCell(colId: PositionsTableColumnId, r: Row) {
+    switch (colId) {
+      case "account":
+        return (
+          <td key={colId} className="whitespace-nowrap py-2 pr-6 text-xs text-zinc-600 dark:text-zinc-400">
+            {nick.get(r.accountId) ?? r.accountName}
+          </td>
+        );
+      case "symbol":
+        return (
+          <td key={colId} className="whitespace-nowrap py-2 pr-6 font-medium">
+            <SymbolLink symbol={symbolPageTargetFromInstrument(r)} className="inline-block pl-6">
+              {r.securityType === "option" ? (
+                <span className={r.quantity < 0 ? "text-red-400" : "text-emerald-400"}>{formatOptionSymbol(r)}</span>
+              ) : (
+                <span>{r.symbol}</span>
+              )}
+            </SymbolLink>
+          </td>
+        );
+      case "quantity":
+        return (
+          <td key={colId} className={"whitespace-nowrap py-2 pr-6 text-right tabular-nums " + posNegClass(r.quantity)}>
+            {formatInt(r.quantity)}
+          </td>
+        );
+      case "price":
+        return (
+          <td key={colId} className="whitespace-nowrap py-2 pr-6 text-right tabular-nums">
+            {r.price == null ? "-" : usd2Unmasked(r.price)}
+          </td>
+        );
+      case "marketValue":
+        return (
+          <td
+            key={colId}
+            className={
+              "whitespace-nowrap py-2 pr-6 text-right tabular-nums " + (r.marketValue == null ? "" : posNegClass(r.marketValue))
+            }
+          >
+            {r.marketValue == null ? "-" : usd2Masked(r.marketValue, privacyMasked)}
+          </td>
+        );
+      case "delta":
+        return (
+          <td key={colId} className={"whitespace-nowrap py-2 pr-6 text-right tabular-nums " + posNegClass(r.delta)}>
+            {r.delta == null ? "-" : formatNum(r.delta, 3)}
+          </td>
+        );
+      case "gamma":
+        return (
+          <td key={colId} className={"whitespace-nowrap py-2 pr-6 text-right tabular-nums " + posNegClass(r.gamma)}>
+            {r.gamma == null ? "-" : formatNum(r.gamma, 4)}
+          </td>
+        );
+      case "theta":
+        return (
+          <td key={colId} className={"whitespace-nowrap py-2 pr-6 text-right tabular-nums " + posNegClass(r.theta)}>
+            {r.theta == null ? "-" : formatNum(r.theta, 3)}
+          </td>
+        );
+      case "dte":
+        return (
+          <td key={colId} className="whitespace-nowrap py-2 pr-6 text-right tabular-nums">
+            {r.dte == null ? "-" : formatInt(r.dte)}
+          </td>
+        );
+      case "intrinsic":
+        return (
+          <td key={colId} className="whitespace-nowrap py-2 pr-6 text-right tabular-nums text-zinc-800 dark:text-zinc-200">
+            {formatOptionIntExtPerShare(r.intrinsic, r.quantity, { mask: privacyMasked })}
+          </td>
+        );
+      case "extrinsic":
+        return (
+          <td key={colId} className="whitespace-nowrap py-2 pr-6 text-right tabular-nums text-zinc-800 dark:text-zinc-200">
+            {formatOptionIntExtPerShare(r.extrinsic, r.quantity, { mask: privacyMasked })}
+          </td>
+        );
+      default:
+        return null;
+    }
+  }
+
   return (
-    <div className="mt-4 overflow-x-auto pb-2">
+    <div className="mt-4 max-w-full overflow-x-auto overflow-y-visible pb-2">
       <table className="w-max min-w-[1600px] border-collapse text-sm">
         <thead>
-          <tr className="border-b border-zinc-300 bg-zinc-50 text-zinc-600 dark:border-white/20 dark:bg-zinc-900/40 dark:text-zinc-400">
-            {showAccountCol ? (
-              <th className="whitespace-nowrap py-2 pr-6 text-left font-medium">Account</th>
-            ) : null}
-            <SortTh col="symbol" label="Symbol" sortColumn={sortColumn} sortAsc={sortAsc} onToggle={toggleSort} align="left" />
-            <SortTh col="quantity" label="Qty" sortColumn={sortColumn} sortAsc={sortAsc} onToggle={toggleSort} align="right" />
-            <SortTh col="price" label="Price" sortColumn={sortColumn} sortAsc={sortAsc} onToggle={toggleSort} align="right" />
-            <SortTh
-              col="marketValue"
-              label={"Market\u00A0value"}
-              sortColumn={sortColumn}
-              sortAsc={sortAsc}
-              onToggle={toggleSort}
-              align="right"
-            />
-            <SortTh col="delta" label="Delta" sortColumn={sortColumn} sortAsc={sortAsc} onToggle={toggleSort} align="right" />
-            <SortTh col="gamma" label="Gamma" sortColumn={sortColumn} sortAsc={sortAsc} onToggle={toggleSort} align="right" />
-            <SortTh col="theta" label="Theta" sortColumn={sortColumn} sortAsc={sortAsc} onToggle={toggleSort} align="right" />
-            <SortTh col="dte" label="DTE" sortColumn={sortColumn} sortAsc={sortAsc} onToggle={toggleSort} align="right" />
-            <SortTh col="intrinsic" label="Intrinsic" sortColumn={sortColumn} sortAsc={sortAsc} onToggle={toggleSort} align="right" />
-            <SortTh col="extrinsic" label="Extrinsic" sortColumn={sortColumn} sortAsc={sortAsc} onToggle={toggleSort} align="right" />
+          <tr className="border-b border-zinc-300 text-zinc-600 dark:border-white/20 dark:text-zinc-400">
+            {columnOrder.map((colId) => headerCell(colId))}
           </tr>
         </thead>
         <tbody>
           {groups.map((g) => {
             const collapsedNow = isCollapsed(g.underlying);
-            const caret = collapsedNow ? "▸" : "▾";
             return (
               <Fragment key={g.underlying}>
                 <tr
@@ -184,78 +384,14 @@ export function GroupedTable({
                   onClick={() => toggleCollapsed(accountId, g.underlying)}
                   title="Toggle underlying group"
                 >
-                  {showAccountCol ? <td className="whitespace-nowrap py-2 pr-6 text-xs text-zinc-600 dark:text-zinc-400" /> : null}
-                  <td className="whitespace-nowrap py-2 pr-6 font-semibold">
-                    <span className="inline-flex items-center gap-2">
-                      <span className="w-4 text-zinc-500 dark:text-zinc-400">{caret}</span>
-                      <span>{g.underlying}</span>
-                    </span>
-                  </td>
-                  <td className="whitespace-nowrap py-2 pr-6 text-right tabular-nums text-zinc-500 dark:text-zinc-400">—</td>
-                  <td className="whitespace-nowrap py-2 pr-6 text-right tabular-nums text-zinc-500 dark:text-zinc-400">—</td>
-                  <td
-                    className={
-                      "whitespace-nowrap py-2 pr-6 text-right tabular-nums font-semibold " + posNegClass(g.netMarketValue)
-                    }
-                  >
-                    {usd2Masked(g.netMarketValue, privacyMasked)}
-                  </td>
-                  <td className="whitespace-nowrap py-2 pr-6 text-right tabular-nums text-zinc-500 dark:text-zinc-400">—</td>
-                  <td className="whitespace-nowrap py-2 pr-6 text-right tabular-nums text-zinc-500 dark:text-zinc-400">—</td>
-                  <td className="whitespace-nowrap py-2 pr-6 text-right tabular-nums text-zinc-500 dark:text-zinc-400">—</td>
-                  <td className="whitespace-nowrap py-2 pr-6 text-right tabular-nums text-zinc-500 dark:text-zinc-400">—</td>
-                  <td className="whitespace-nowrap py-2 pr-6 text-right tabular-nums text-zinc-500 dark:text-zinc-400">—</td>
-                  <td className="whitespace-nowrap py-2 pr-6 text-right tabular-nums text-zinc-500 dark:text-zinc-400">—</td>
+                  {columnOrder.map((colId) => groupRowCell(colId, g, collapsedNow))}
                 </tr>
 
                 {collapsedNow
                   ? null
                   : g.rows.map((r) => (
                       <tr key={r.positionId} className="border-b border-zinc-200 dark:border-white/20">
-                        {showAccountCol ? (
-                          <td className="whitespace-nowrap py-2 pr-6 text-xs text-zinc-600 dark:text-zinc-400">
-                            {nick.get(r.accountId) ?? r.accountName}
-                          </td>
-                        ) : null}
-                        <td className="whitespace-nowrap py-2 pr-6 font-medium">
-                          {r.securityType === "option" ? (
-                            <span className={"pl-6 " + (r.quantity < 0 ? "text-red-400" : "text-emerald-400")}>
-                              {formatOptionSymbol(r)}
-                            </span>
-                          ) : (
-                            <span className="pl-6">{r.symbol}</span>
-                          )}
-                        </td>
-                        <td className={"whitespace-nowrap py-2 pr-6 text-right tabular-nums " + posNegClass(r.quantity)}>
-                          {formatInt(r.quantity)}
-                        </td>
-                        <td className="whitespace-nowrap py-2 pr-6 text-right tabular-nums">
-                          {r.price == null ? "-" : usd2Unmasked(r.price)}
-                        </td>
-                        <td
-                          className={
-                            "whitespace-nowrap py-2 pr-6 text-right tabular-nums " +
-                            (r.marketValue == null ? "" : posNegClass(r.marketValue))
-                          }
-                        >
-                          {r.marketValue == null ? "-" : usd2Masked(r.marketValue, privacyMasked)}
-                        </td>
-                        <td className={"whitespace-nowrap py-2 pr-6 text-right tabular-nums " + posNegClass(r.delta)}>
-                          {r.delta == null ? "-" : formatNum(r.delta, 3)}
-                        </td>
-                        <td className={"whitespace-nowrap py-2 pr-6 text-right tabular-nums " + posNegClass(r.gamma)}>
-                          {r.gamma == null ? "-" : formatNum(r.gamma, 4)}
-                        </td>
-                        <td className={"whitespace-nowrap py-2 pr-6 text-right tabular-nums " + posNegClass(r.theta)}>
-                          {r.theta == null ? "-" : formatNum(r.theta, 3)}
-                        </td>
-                        <td className="whitespace-nowrap py-2 pr-6 text-right tabular-nums">{r.dte == null ? "-" : formatInt(r.dte)}</td>
-                        <td className={"whitespace-nowrap py-2 pr-6 text-right tabular-nums " + posNegClass(r.intrinsic)}>
-                          {r.intrinsic == null ? "-" : usd2Unmasked(r.intrinsic)}
-                        </td>
-                        <td className={"whitespace-nowrap py-2 pr-6 text-right tabular-nums " + posNegClass(r.extrinsic)}>
-                          {r.extrinsic == null ? "-" : usd2Unmasked(r.extrinsic)}
-                        </td>
+                        {columnOrder.map((colId) => dataRowCell(colId, r))}
                       </tr>
                     ))}
               </Fragment>
@@ -386,7 +522,7 @@ export function computeUnderlyingGroups(
   return out;
 }
 
-function SortTh({
+function SortThButton({
   col,
   label,
   sortColumn,
@@ -402,27 +538,20 @@ function SortTh({
   align?: "left" | "right";
 }) {
   const active = sortColumn === col;
-  const thAlign = align === "right" ? "text-right" : "text-left";
   return (
-    <th
-      scope="col"
-      className={"whitespace-nowrap py-2 pr-6 font-medium " + thAlign}
-      aria-sort={active ? (sortAsc ? "ascending" : "descending") : "none"}
+    <button
+      type="button"
+      onClick={() => onToggle(col)}
+      title={active ? `Sorted ${sortAsc ? "ascending" : "descending"}` : `Sort by ${label}`}
+      className={
+        "-mx-1 inline-flex w-full max-w-full items-center gap-1 rounded px-1 py-0.5 font-medium text-zinc-600 hover:bg-zinc-100 hover:text-zinc-900 dark:text-zinc-400 dark:hover:bg-white/10 dark:hover:text-zinc-100 " +
+        (align === "right" ? "justify-end" : "justify-start")
+      }
     >
-      <button
-        type="button"
-        onClick={() => onToggle(col)}
-        title={active ? `Sorted ${sortAsc ? "ascending" : "descending"}` : `Sort by ${label}`}
-        className={
-          "-mx-1 inline-flex w-full max-w-full items-center gap-1 rounded px-1 py-0.5 font-medium text-zinc-600 hover:bg-zinc-100 hover:text-zinc-900 dark:text-zinc-400 dark:hover:bg-white/10 dark:hover:text-zinc-100 " +
-          (align === "right" ? "justify-end" : "justify-start")
-        }
-      >
-        <span>{label}</span>
-        <span className="tabular-nums text-xs opacity-70" aria-hidden>
-          {active ? (sortAsc ? "▲" : "▼") : ""}
-        </span>
-      </button>
-    </th>
+      <span>{label}</span>
+      <span className="tabular-nums text-xs opacity-70" aria-hidden>
+        {active ? (sortAsc ? "▲" : "▼") : ""}
+      </span>
+    </button>
   );
 }

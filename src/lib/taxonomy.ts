@@ -1,4 +1,5 @@
 import { getDb } from "@/lib/db";
+import { normalizeSectorLabel } from "@/lib/sectorLabel";
 import { schwabMarketFetch } from "@/lib/schwab/client";
 
 export type MarketCapBucket = "mega" | "large" | "mid" | "small" | "micro" | "unknown";
@@ -66,10 +67,12 @@ export function getTaxonomy(symbol: string): SecurityTaxonomy | null {
 }
 
 export function taxonomyBucket(symbol: string, category: TaxonomyCategory): string {
-  const t = getTaxonomy(symbol);
+  const sym = normSym(symbol);
+  if (!sym) return "Unknown";
+  if (category === "marketCap") return sym;
+  const t = getTaxonomy(sym);
   if (!t) return "Unknown";
-  if (category === "sector") return t.sector ?? "Unknown";
-  if (category === "marketCap") return t.marketCapBucket ?? "unknown";
+  if (category === "sector") return normalizeSectorLabel(t.sector);
   return t.revenueGeoBucket ?? "unknown";
 }
 
@@ -81,59 +84,67 @@ export async function syncTaxonomyFromSchwab(symbols: string[]): Promise<{ upser
   const uniq = Array.from(new Set(symbols.map(normSym).filter(Boolean)));
   if (uniq.length === 0) return { upserted: 0 };
 
-  // Attempt Schwab market-data style fundamentals (TD-style endpoint). If the tenant doesn't support it,
-  // swallow and return 0.
-  let resp: unknown;
-  try {
-    const url = `/instruments?symbol=${encodeURIComponent(uniq.join(","))}&projection=fundamental`;
-    resp = await schwabMarketFetch<unknown>(url);
-  } catch {
-    return { upserted: 0 };
-  }
-
   const db = getDb();
   const upsert = db.prepare(`
     INSERT INTO security_taxonomy (symbol, sector, industry, market_cap, market_cap_bucket, revenue_geo_bucket, source, updated_at)
     VALUES (@symbol, @sector, @industry, @market_cap, @market_cap_bucket, @revenue_geo_bucket, 'schwab', datetime('now'))
     ON CONFLICT(symbol) DO UPDATE SET
-      sector = excluded.sector,
-      industry = excluded.industry,
-      market_cap = excluded.market_cap,
-      market_cap_bucket = excluded.market_cap_bucket,
-      revenue_geo_bucket = excluded.revenue_geo_bucket,
+      sector = COALESCE(excluded.sector, security_taxonomy.sector),
+      industry = COALESCE(excluded.industry, security_taxonomy.industry),
+      market_cap = CASE
+        WHEN excluded.market_cap IS NOT NULL AND excluded.market_cap > 0 THEN excluded.market_cap
+        ELSE security_taxonomy.market_cap
+      END,
+      revenue_geo_bucket = COALESCE(excluded.revenue_geo_bucket, security_taxonomy.revenue_geo_bucket),
       source = excluded.source,
       updated_at = excluded.updated_at
   `);
 
   let upserted = 0;
   const asObj = (v: unknown): Record<string, unknown> | null => (v && typeof v === "object" ? (v as Record<string, unknown>) : null);
-  const root = asObj(resp);
-  if (!root) return { upserted: 0 };
 
-  for (const sym of uniq) {
-    const entry = root[sym] ?? root[sym.toUpperCase()];
-    const eObj = asObj(entry);
-    if (!eObj) continue;
-    const fundamental = asObj(eObj.fundamental) ?? asObj(eObj.fundamentals) ?? eObj;
-    const sector = typeof fundamental?.sector === "string" ? fundamental.sector : null;
-    const industry = typeof fundamental?.industry === "string" ? fundamental.industry : null;
-    const marketCap =
-      (typeof fundamental?.marketCap === "number" && Number.isFinite(fundamental.marketCap) ? fundamental.marketCap : null) ??
-      (typeof fundamental?.marketCap === "string" && fundamental.marketCap.trim() !== "" && Number.isFinite(Number(fundamental.marketCap))
-        ? Number(fundamental.marketCap)
-        : null) ??
-      null;
-    if (!sector && !industry) continue;
+  const CHUNK = 40;
+  for (let i = 0; i < uniq.length; i += CHUNK) {
+    const chunk = uniq.slice(i, i + CHUNK);
+    let resp: unknown;
+    try {
+      const url = `/instruments?symbol=${encodeURIComponent(chunk.join(","))}&projection=fundamental`;
+      resp = await schwabMarketFetch<unknown>(url);
+    } catch {
+      continue;
+    }
 
-    upsert.run({
-      symbol: sym,
-      sector,
-      industry,
-      market_cap: marketCap,
-      market_cap_bucket: null,
-      revenue_geo_bucket: null,
-    });
-    upserted++;
+    const root = asObj(resp);
+    if (!root) continue;
+
+    for (const sym of chunk) {
+      const entry = root[sym] ?? root[sym.toUpperCase()];
+      const eObj = asObj(entry);
+      if (!eObj) continue;
+      const fundamental = asObj(eObj.fundamental) ?? asObj(eObj.fundamentals) ?? eObj;
+      const sectorRaw = typeof fundamental?.sector === "string" ? fundamental.sector.trim() : null;
+      const sector =
+        sectorRaw && sectorRaw.toLowerCase() !== "other" ? sectorRaw : null;
+      const industry = typeof fundamental?.industry === "string" ? fundamental.industry : null;
+      const marketCap =
+        (typeof fundamental?.marketCap === "number" && Number.isFinite(fundamental.marketCap) ? fundamental.marketCap : null) ??
+        (typeof fundamental?.marketCap === "string" && fundamental.marketCap.trim() !== "" && Number.isFinite(Number(fundamental.marketCap))
+          ? Number(fundamental.marketCap)
+          : null) ??
+        null;
+      const hasCap = marketCap != null && Number.isFinite(marketCap) && marketCap > 0;
+      if (!sector && !industry && !hasCap) continue;
+
+      upsert.run({
+        symbol: sym,
+        sector,
+        industry,
+        market_cap: marketCap,
+        market_cap_bucket: null,
+        revenue_geo_bucket: null,
+      });
+      upserted++;
+    }
   }
 
   return { upserted };

@@ -15,6 +15,7 @@
 
 # next.js
 /.next/
+/.next-desktop/
 /out/
 
 # production
@@ -23,6 +24,7 @@
 # misc
 .DS_Store
 *.pem
+.cursor/
 
 # debug
 npm-debug.log*
@@ -41,3 +43,7 @@ yarn-error.log*
 next-env.d.ts
 
 certificates
+
+# Desktop (Electron) bundle + installers
+/desktop/server-bundle/
+/desktop/out/

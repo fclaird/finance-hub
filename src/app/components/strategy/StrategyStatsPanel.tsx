@@ -1,5 +1,6 @@
 "use client";
 
+import { SymbolLink } from "@/app/components/SymbolLink";
 import { formatUsd2 } from "@/lib/format";
 import { posNegClass } from "@/lib/terminal/colors";
 import type { StrategyStats } from "@/lib/strategy/strategyTradeStats";
@@ -58,7 +59,7 @@ export function StrategyStatsPanel({
         <div className="mt-1 text-sm font-medium text-zinc-800 dark:text-zinc-200">
           {stats.largestWinner ? (
             <>
-              {stats.largestWinner.symbol}{" "}
+              <SymbolLink symbol={stats.largestWinner.symbol}>{stats.largestWinner.symbol}</SymbolLink>{" "}
               <span className="tabular-nums text-emerald-600 dark:text-emerald-400">
                 {formatUsd2(stats.largestWinner.pnl, { mask: privacyMasked })}
               </span>
@@ -73,7 +74,7 @@ export function StrategyStatsPanel({
         <div className="mt-1 text-sm font-medium text-zinc-800 dark:text-zinc-200">
           {stats.largestLoser ? (
             <>
-              {stats.largestLoser.symbol}{" "}
+              <SymbolLink symbol={stats.largestLoser.symbol}>{stats.largestLoser.symbol}</SymbolLink>{" "}
               <span className="tabular-nums text-red-600 dark:text-red-400">
                 {formatUsd2(stats.largestLoser.pnl, { mask: privacyMasked })}
               </span>

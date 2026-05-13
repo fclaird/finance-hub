@@ -3,17 +3,19 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 
+import { ExposurePositionTreemap } from "@/app/components/charts/ExposurePositionTreemap";
 import { FinancePiePanel } from "@/app/components/FinancePiePanel";
 import { usePrivacy } from "@/app/components/PrivacyProvider";
 import { formatUsd2 } from "@/lib/format";
 import { taxonomyForSymbol as demoTaxonomyForSymbol } from "@/lib/demoTaxonomy";
+import { normalizeSectorLabel } from "@/lib/sectorLabel";
 
 type TaxonomyCategory = "sector" | "marketCap" | "revenueGeo";
 
 type TaxonomyRow = {
   sector: string | null;
   industry: string | null;
-  marketCapBucket: string | null;
+  marketCap: number | null;
   revenueGeoBucket: string | null;
   source: string | null;
   updatedAt: string;
@@ -21,11 +23,12 @@ type TaxonomyRow = {
 
 function taxonomyBucket(map: Map<string, TaxonomyRow>, sym: string, category: TaxonomyCategory): string {
   const s = (sym ?? "").trim().toUpperCase();
+  if (category === "marketCap") return s;
+
   const t = map.get(s);
   const fallback = demoTaxonomyForSymbol(s);
-  if (!t) return category === "sector" ? fallback.sector : category === "marketCap" ? fallback.marketCap : fallback.revenueGeo;
-  if (category === "sector") return t.sector ?? fallback.sector;
-  if (category === "marketCap") return t.marketCapBucket ?? fallback.marketCap;
+  if (!t) return category === "sector" ? normalizeSectorLabel(fallback.sector) : fallback.revenueGeo;
+  if (category === "sector") return normalizeSectorLabel(t.sector ?? fallback.sector);
   return t.revenueGeoBucket ?? fallback.revenueGeo;
 }
 
@@ -56,8 +59,6 @@ const PIE_METRIC_LABEL: Record<PieMetric, string> = {
   synthetic: "Synthetic",
   net: "Net",
 };
-
-const PCT2 = new Intl.NumberFormat(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
 function usd2Masked(v: number, masked: boolean) {
   return formatUsd2(v, { mask: masked });
@@ -149,9 +150,8 @@ export default function DiversificationPage() {
         if (!expJson.ok) throw new Error(expJson.error ?? "Failed to load exposure");
         setRows(expJson.exposure ?? []);
 
-        // Best-effort taxonomy warm-up (non-blocking for UI correctness).
-        const syms = Array.from(new Set((expJson.exposure ?? []).map((r) => r.underlyingSymbol)));
-        void (async () => {
+        const syms = Array.from(new Set((expJson.exposure ?? []).map((r) => r.underlyingSymbol).filter(Boolean)));
+        if (syms.length) {
           try {
             await fetch("/api/taxonomy/sync", {
               method: "POST",
@@ -161,12 +161,12 @@ export default function DiversificationPage() {
             const txResp = await fetch(`/api/taxonomy?symbols=${encodeURIComponent(syms.join(","))}`, { cache: "no-store" });
             const txJson = (await txResp.json()) as { ok: boolean; taxonomy?: Record<string, TaxonomyRow> };
             const m = new Map<string, TaxonomyRow>();
-            for (const [k, v] of Object.entries(txJson.taxonomy ?? {})) m.set(k.toUpperCase(), v);
+            for (const [k, v] of Object.entries(txJson.taxonomy ?? {})) m.set(k.toUpperCase(), v as TaxonomyRow);
             setTax(m);
           } catch {
-            // ignore
+            // taxonomy is optional for first paint
           }
-        })();
+        }
 
         const bJson = (await safeJson(bucketResp)) as {
           ok: boolean;
@@ -191,13 +191,52 @@ export default function DiversificationPage() {
 
   const pieTotal = rolled.total;
 
+  const capBySymbol = useMemo(() => {
+    const m = new Map<string, number | null>();
+    for (const [sym, row] of tax) m.set(sym, row.marketCap ?? null);
+    return m;
+  }, [tax]);
+
+  useEffect(() => {
+    if (category !== "marketCap") return;
+    const syms = Array.from(
+      new Set(scopedRows.map((r) => r.underlyingSymbol.trim().toUpperCase()).filter(Boolean)),
+    );
+    if (syms.length === 0) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        await fetch("/api/taxonomy/sync", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ symbols: syms, refreshMarketCapsFromSchwab: true }),
+        });
+        const txResp = await fetch(`/api/taxonomy?symbols=${encodeURIComponent(syms.join(","))}`, { cache: "no-store" });
+        const txJson = (await txResp.json()) as { ok: boolean; taxonomy?: Record<string, TaxonomyRow> };
+        if (cancelled) return;
+        setTax((prev) => {
+          const next = new Map(prev);
+          for (const [k, v] of Object.entries(txJson.taxonomy ?? {})) {
+            next.set(k.toUpperCase(), v as TaxonomyRow);
+          }
+          return next;
+        });
+      } catch {
+        /* Schwab / taxonomy optional */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [category, scopedRows, pieView, pieMetric]);
+
   const categoryTitle =
     category === "sector" ? "Sector" : category === "marketCap" ? "Market cap" : "Revenue geography";
 
   const scopeTitle = pieView === "net" ? "Net" : pieView === "brokerage" ? "Brokerage" : "Retirement";
 
   return (
-    <div className="flex w-full max-w-6xl flex-1 flex-col gap-6 py-8 pl-4 pr-6">
+    <div className="flex w-full max-w-[108rem] flex-1 flex-col gap-8 py-10 pl-5 pr-6 sm:pl-6 sm:pr-8">
       <div className="flex items-start justify-between gap-4">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Diversification</h1>
@@ -250,21 +289,30 @@ export default function DiversificationPage() {
         ) : null}
 
         <div className="mt-4">
-          <FinancePiePanel
-            title={`${scopeTitle} · ${categoryTitle} · ${pieMetricChartSubtitle(pieMetric)}`}
-            buckets={[
-              {
-                label: "tax",
-                totalMarketValue: pieTotal,
-                byAsset: rolled.rows.map((r) => ({
-                  key: r.key,
-                  marketValue: r.mv,
-                  weight: pieTotal ? r.mv / pieTotal : 0,
-                  constituents: r.constituents,
-                })),
-              },
-            ]}
-          />
+          {category === "marketCap" ? (
+            <ExposurePositionTreemap
+              leaves={rolled.rows.flatMap((r) => r.constituents)}
+              underlyingMarketCapBySymbol={capBySymbol}
+              masked={privacy.masked}
+              title={`${scopeTitle} · ${categoryTitle} · ${pieMetricChartSubtitle(pieMetric)}`}
+            />
+          ) : (
+            <FinancePiePanel
+              title={`${scopeTitle} · ${categoryTitle} · ${pieMetricChartSubtitle(pieMetric)}`}
+              buckets={[
+                {
+                  label: "tax",
+                  totalMarketValue: pieTotal,
+                  byAsset: rolled.rows.map((r) => ({
+                    key: r.key,
+                    marketValue: r.mv,
+                    weight: pieTotal ? r.mv / pieTotal : 0,
+                    constituents: r.constituents,
+                  })),
+                },
+              ]}
+            />
+          )}
         </div>
 
         <div className="mt-6 flex flex-wrap items-center justify-between gap-4 border-b border-zinc-200 pb-4 dark:border-white/15">
@@ -319,36 +367,6 @@ export default function DiversificationPage() {
           <div className="text-sm font-semibold text-zinc-700 dark:text-zinc-300">
             {scopeTitle} · {PIE_METRIC_LABEL[pieMetric]}
           </div>
-        </div>
-
-        <div className="mt-4 overflow-hidden rounded-lg border border-zinc-300 dark:border-white/20">
-          <table className="w-full border-collapse text-sm">
-            <thead>
-              <tr className="border-b border-zinc-300 text-left text-zinc-600 dark:border-white/20 dark:text-zinc-400">
-                <th className="px-3 py-2 font-medium">Bucket</th>
-                <th className="px-3 py-2 text-right font-medium">
-                  {pieMetric === "spot" ? "Spot MV" : pieMetric === "synthetic" ? "Synthetic MV" : "Net MV"}
-                </th>
-                <th className="px-3 py-2 text-right font-medium">Weight</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rolled.rows.map((r) => (
-                <tr key={r.key} className="border-b border-zinc-200 last:border-0 dark:border-white/20">
-                  <td className="px-3 py-2 font-medium">{r.key}</td>
-                  <td className="px-3 py-2 text-right tabular-nums">{usd2Masked(r.mv, privacy.masked)}</td>
-                  <td className="px-3 py-2 text-right tabular-nums">{PCT2.format(r.weight * 100)}%</td>
-                </tr>
-              ))}
-              {rolled.rows.length === 0 ? (
-                <tr>
-                  <td colSpan={3} className="px-3 py-6 text-center text-zinc-600 dark:text-zinc-400">
-                    No data yet.
-                  </td>
-                </tr>
-              ) : null}
-            </tbody>
-          </table>
         </div>
       </section>
     </div>

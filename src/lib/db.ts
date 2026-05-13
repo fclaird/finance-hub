@@ -69,6 +69,18 @@ function migrate(db: Database.Database) {
     ensureColumn(db, "earnings_opp_metrics", "avg_dollar_volume_20d", "avg_dollar_volume_20d REAL");
     ensureColumn(db, "earnings_opp_metrics", "dollar_liquidity_score", "dollar_liquidity_score REAL");
   }
+  const hasDmHoldings = db
+    .prepare(`SELECT 1 FROM sqlite_master WHERE type='table' AND name='dividend_model_holdings' LIMIT 1`)
+    .get();
+  if (hasDmHoldings) {
+    ensureColumn(db, "dividend_model_holdings", "avg_unit_cost", "avg_unit_cost REAL");
+  }
+  const hasDmFundSnap = db
+    .prepare(`SELECT 1 FROM sqlite_master WHERE type='table' AND name='dividend_model_symbol_fundamentals_snap' LIMIT 1`)
+    .get();
+  if (hasDmFundSnap) {
+    ensureColumn(db, "dividend_model_symbol_fundamentals_snap", "next_ex_date", "next_ex_date TEXT");
+  }
   // In Phase 1 we keep migrations as a single schema file; we can add proper migration files later.
   const name = "0001_init";
   const exists = db

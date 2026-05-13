@@ -4,9 +4,12 @@ import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 
 import { AccountPositionsForAllocation } from "@/app/components/AccountPositionsForAllocation";
+import { SymbolLink } from "@/app/components/SymbolLink";
+import { AllocationWeightingChart } from "@/app/components/allocation/AllocationWeightingChart";
 import { FinancePiePanel } from "@/app/components/FinancePiePanel";
 import { useEquityMarketPolling } from "@/hooks/useEquityMarketPolling";
 import { usePrivacy } from "@/app/components/PrivacyProvider";
+import { assignEarthToneColorsBySymbols } from "@/lib/charts/pieEarthTones";
 import { formatUsd2 } from "@/lib/format";
 import { posNegClass } from "@/lib/terminal/colors";
 
@@ -16,9 +19,21 @@ type ExposureRow = {
   heldShares: number;
   syntheticMarketValue: number;
   syntheticShares: number;
+  /** Options liquidating value: sum of option contract `market_value` for this underlying. */
+  optionsMarkMarketValue: number;
 };
 
-type SortColumn = "underlying" | "spot" | "synthetic" | "net" | "syntheticShares" | "heldShares" | "netShares" | "pct";
+type SortColumn =
+  | "underlying"
+  | "spot"
+  | "synthetic"
+  | "optionsLiquidating"
+  | "netLiquidating"
+  | "net"
+  | "syntheticShares"
+  | "heldShares"
+  | "netShares"
+  | "pct";
 type ClassSortColumn = "key" | "mv" | "weight";
 
 type PieMetric = "spot" | "synthetic" | "net";
@@ -34,6 +49,15 @@ function sliceMv(r: ExposureRow, metric: PieMetric): number {
     default:
       return 0;
   }
+}
+
+function chartSyntheticMv(r: ExposureRow, basis: "delta" | "mark"): number {
+  return basis === "mark" ? r.optionsMarkMarketValue : r.syntheticMarketValue;
+}
+
+/** Spot (shares) MV + options liquidating value (contract marks). */
+function netLiquidatingMv(r: ExposureRow): number {
+  return r.spotMarketValue + r.optionsMarkMarketValue;
 }
 
 function netShares(r: ExposureRow) {
@@ -199,6 +223,8 @@ export default function AllocationPage() {
   const [error, setError] = useState<string | null>(null);
   const [pieView, setPieView] = useState<"net" | "retirement" | "brokerage">("net");
   const [pieMetric, setPieMetric] = useState<PieMetric>("net");
+  /** Pie + bar charts only: delta-weighted synthetic MV vs options liquidating value (contract marks). Table % / Net MV stay delta-based. */
+  const [syntheticChartBasis, setSyntheticChartBasis] = useState<"delta" | "mark">("delta");
   const [detail, setDetail] = useState<
     Map<
       string,
@@ -250,7 +276,12 @@ export default function AllocationPage() {
 
     const expJson = (await safeJson(expResp)) as { ok: boolean; exposure?: ExposureRow[]; error?: string };
     if (!expJson.ok) throw new Error(expJson.error ?? "Failed to load exposure");
-    setRows(expJson.exposure ?? []);
+    setRows(
+      (expJson.exposure ?? []).map((r) => ({
+        ...r,
+        optionsMarkMarketValue: typeof r.optionsMarkMarketValue === "number" ? r.optionsMarkMarketValue : 0,
+      })),
+    );
 
     const allocJson = (await safeJson(allocResp)) as {
       ok: boolean;
@@ -279,7 +310,15 @@ export default function AllocationPage() {
       error?: string;
     };
     if (!expBucketJson.ok) throw new Error(expBucketJson.error ?? "Failed to load exposure buckets");
-    setExposureBuckets(expBucketJson.buckets ?? []);
+    setExposureBuckets(
+      (expBucketJson.buckets ?? []).map((b) => ({
+        ...b,
+        exposure: (b.exposure ?? []).map((r) => ({
+          ...r,
+          optionsMarkMarketValue: typeof r.optionsMarkMarketValue === "number" ? r.optionsMarkMarketValue : 0,
+        })),
+      })),
+    );
   }
 
   useEffect(() => {
@@ -363,6 +402,26 @@ export default function AllocationPage() {
   /** Denominator for % + pie for active metric + scope. */
   const scopedMetricTotal = useMemo(() => scopedRows.reduce((s, r) => s + sliceMv(r, pieMetric), 0), [scopedRows, pieMetric]);
 
+  const chartScopedRows = useMemo(
+    () =>
+      scopedRows.map((r) => ({
+        ...r,
+        syntheticMarketValue: chartSyntheticMv(r, syntheticChartBasis),
+      })),
+    [scopedRows, syntheticChartBasis],
+  );
+
+  const chartScopedMetricTotal = useMemo(
+    () => chartScopedRows.reduce((s, r) => s + sliceMv(r, pieMetric), 0),
+    [chartScopedRows, pieMetric],
+  );
+
+  /** One color per underlying (alphabetical palette) shared by pie, bars, and history line. */
+  const chartSymbolColors = useMemo(
+    () => assignEarthToneColorsBySymbols(chartScopedRows.map((r) => r.underlyingSymbol.trim()).filter(Boolean)),
+    [chartScopedRows],
+  );
+
   const sortedRows = useMemo(() => {
     const rs = [...scopedRows];
     const getNet = (r: ExposureRow) => r.spotMarketValue + r.syntheticMarketValue;
@@ -378,6 +437,12 @@ export default function AllocationPage() {
           break;
         case "synthetic":
           cmp = a.syntheticMarketValue - b.syntheticMarketValue;
+          break;
+        case "optionsLiquidating":
+          cmp = a.optionsMarkMarketValue - b.optionsMarkMarketValue;
+          break;
+        case "netLiquidating":
+          cmp = netLiquidatingMv(a) - netLiquidatingMv(b);
           break;
         case "net":
           cmp = getNet(a) - getNet(b);
@@ -431,7 +496,7 @@ export default function AllocationPage() {
   }
 
   return (
-    <div className="flex w-full min-w-0 max-w-6xl flex-1 flex-col gap-6 py-6 pl-3 pr-4 sm:py-8 sm:pl-4 sm:pr-6">
+    <div className="flex w-full min-w-0 max-w-[108rem] flex-1 flex-col gap-8 py-8 pl-4 pr-5 sm:py-10 sm:pl-6 sm:pr-8">
       <div className="flex items-start justify-between gap-4">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Allocation</h1>
@@ -499,6 +564,22 @@ export default function AllocationPage() {
                   className="py-2 pr-4 text-right font-medium"
                 />
                 <SortTh
+                  col="optionsLiquidating"
+                  label="Options liquidating value"
+                  sortColumn={sortColumn}
+                  sortAsc={sortAsc}
+                  onToggle={toggleSort}
+                  className="py-2 pr-4 text-right font-medium"
+                />
+                <SortTh
+                  col="netLiquidating"
+                  label="Net liquidating value"
+                  sortColumn={sortColumn}
+                  sortAsc={sortAsc}
+                  onToggle={toggleSort}
+                  className="py-2 pr-4 text-right font-medium"
+                />
+                <SortTh
                   col="net"
                   label="Net MV"
                   sortColumn={sortColumn}
@@ -543,10 +624,13 @@ export default function AllocationPage() {
             <tbody>
               {sortedRows.map((r) => {
                 const netMv = r.spotMarketValue + r.syntheticMarketValue;
+                const netLiq = netLiquidatingMv(r);
                 const pct = scopedMetricTotal ? sliceMv(r, pieMetric) / scopedMetricTotal : 0;
                 return (
                   <tr key={r.underlyingSymbol} className="border-b border-zinc-200 dark:border-white/20">
-                    <td className="py-2 pr-4 font-medium">{r.underlyingSymbol}</td>
+                    <td className="py-2 pr-4 font-medium">
+                      <SymbolLink symbol={r.underlyingSymbol}>{r.underlyingSymbol}</SymbolLink>
+                    </td>
                       <td className={"py-2 pr-4 text-right tabular-nums " + posNegClass(r.spotMarketValue)}>
                         {usd2Masked(r.spotMarketValue, privacy.masked)}
                       </td>
@@ -576,6 +660,12 @@ export default function AllocationPage() {
                         })()}
                       >
                         {usd2Masked(r.syntheticMarketValue, privacy.masked)}
+                      </td>
+                      <td className={"py-2 pr-4 text-right tabular-nums " + posNegClass(r.optionsMarkMarketValue)}>
+                        {usd2Masked(r.optionsMarkMarketValue, privacy.masked)}
+                      </td>
+                      <td className={"py-2 pr-4 text-right tabular-nums " + posNegClass(netLiq)}>
+                        {usd2Masked(netLiq, privacy.masked)}
                       </td>
                     <td className="py-2 pr-4 text-right tabular-nums font-medium text-zinc-900 dark:text-zinc-100">
                         <span className={posNegClass(netMv)}>{usd2Masked(netMv, privacy.masked)}</span>
@@ -614,6 +704,22 @@ export default function AllocationPage() {
                     }
                   >
                     {usd2Masked(scopedRows.reduce((s, r) => s + r.syntheticMarketValue, 0), privacy.masked)}
+                  </td>
+                  <td
+                    className={
+                      "py-2 pr-4 text-right tabular-nums " +
+                      posNegClass(scopedRows.reduce((s, r) => s + r.optionsMarkMarketValue, 0))
+                    }
+                  >
+                    {usd2Masked(scopedRows.reduce((s, r) => s + r.optionsMarkMarketValue, 0), privacy.masked)}
+                  </td>
+                  <td
+                    className={
+                      "py-2 pr-4 text-right tabular-nums " +
+                      posNegClass(scopedRows.reduce((s, r) => s + netLiquidatingMv(r), 0))
+                    }
+                  >
+                    {usd2Masked(scopedRows.reduce((s, r) => s + netLiquidatingMv(r), 0), privacy.masked)}
                   </td>
                   <td
                     className={
@@ -660,7 +766,7 @@ export default function AllocationPage() {
               ) : null}
               {rows.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="py-6 text-center text-zinc-600 dark:text-zinc-400">
+                  <td colSpan={10} className="py-6 text-center text-zinc-600 dark:text-zinc-400">
                     No data yet. Connect Schwab and run a sync.
                   </td>
                 </tr>
@@ -670,14 +776,16 @@ export default function AllocationPage() {
         </div>
       </section>
 
-      <section className="rounded-2xl border border-zinc-300 bg-white p-6 shadow-sm dark:border-white/20 dark:bg-zinc-950">
-        <h2 className="text-base font-semibold">Weighting (pie chart)</h2>
+      <section className="flex flex-col rounded-2xl border border-zinc-300 bg-white p-4 shadow-sm dark:border-white/20 dark:bg-zinc-950 sm:p-6">
+        <h2 className="text-base font-semibold">Weighting (pie & bars)</h2>
         <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
-          Color-coded by symbol. Scope and weights apply to the exposure table above and this chart.
+          Color-coded by symbol. The exposure table and % column always use delta-weighted synthetic MV. Pie and bar charts follow the scope below; when you choose{" "}
+          <span className="font-medium text-zinc-800 dark:text-zinc-200">Mark (contracts)</span> (options liquidating value) for charts, slices can diverge from the table while History (if enabled) stays
+          delta-based snapshots.
         </p>
 
-        <div className="mt-4 flex flex-wrap items-center justify-between gap-4 border-b border-zinc-200 pb-4 dark:border-white/15">
-          <div className="flex flex-wrap items-center gap-3">
+        <div className="mt-4 flex w-full flex-wrap items-center gap-x-3 gap-y-3 border-t border-zinc-200 pt-4 dark:border-white/15 sm:gap-x-5">
+          <div className="flex flex-wrap items-center gap-2 sm:gap-3">
             <div className="text-sm font-semibold text-zinc-700 dark:text-zinc-300">Scope</div>
             <div className="grid w-max max-w-full grid-cols-3 gap-1.5">
               {([
@@ -701,8 +809,9 @@ export default function AllocationPage() {
                 </button>
               ))}
             </div>
-
-            <div className="ml-2 text-sm font-semibold text-zinc-700 dark:text-zinc-300">Weights</div>
+          </div>
+          <div className="flex flex-wrap items-center gap-2 sm:gap-3">
+            <div className="text-sm font-semibold text-zinc-700 dark:text-zinc-300">Weights</div>
             <div className="grid w-max max-w-full grid-cols-3 gap-1.5">
               {(["net", "spot", "synthetic"] as const).map((m) => (
                 <button
@@ -722,35 +831,85 @@ export default function AllocationPage() {
               ))}
             </div>
           </div>
-
-          <div className="text-sm font-semibold text-zinc-700 dark:text-zinc-300">
+          {pieMetric === "synthetic" || pieMetric === "net" ? (
+            <div className="flex basis-full flex-wrap items-center gap-2 sm:gap-3">
+              <div className="text-sm font-semibold text-zinc-700 dark:text-zinc-300">Chart options MV</div>
+              <div className="grid w-max max-w-full grid-cols-2 gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => setSyntheticChartBasis("delta")}
+                  className={
+                    BTN_CLASSES +
+                    " min-w-[6rem] shadow-sm " +
+                    (syntheticChartBasis === "delta"
+                      ? "bg-zinc-900 text-white shadow dark:bg-white dark:text-zinc-900"
+                      : "border border-zinc-300 bg-white text-zinc-900 hover:bg-zinc-50 dark:border-white/20 dark:bg-zinc-950 dark:text-zinc-100 dark:hover:bg-zinc-900")
+                  }
+                >
+                  Δ proxy
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSyntheticChartBasis("mark")}
+                  className={
+                    BTN_CLASSES +
+                    " min-w-[6rem] shadow-sm " +
+                    (syntheticChartBasis === "mark"
+                      ? "bg-zinc-900 text-white shadow dark:bg-white dark:text-zinc-900"
+                      : "border border-zinc-300 bg-white text-zinc-900 hover:bg-zinc-50 dark:border-white/20 dark:bg-zinc-950 dark:text-zinc-100 dark:hover:bg-zinc-900")
+                  }
+                >
+                  Mark (contracts)
+                </button>
+              </div>
+            </div>
+          ) : null}
+          <div className="basis-full text-sm font-semibold text-zinc-700 dark:text-zinc-300 sm:basis-auto sm:ml-auto sm:shrink-0">
             {pieView === "net" ? "All" : pieView === "brokerage" ? "Brokerage" : "Retirement"} · {PIE_METRIC_LABEL[pieMetric]}
+            {pieMetric !== "spot" && syntheticChartBasis === "mark" ? " · charts @ mark" : ""}
           </div>
         </div>
 
-        <div className="mt-3">
-          <FinancePiePanel
-            title={`${pieView === "net" ? "All accounts" : pieView === "retirement" ? "Retirement" : "Brokerage"} · ${pieMetricChartSubtitle(pieMetric)}`}
-            emptyMessage={
-              pieMetric === "synthetic" && Math.abs(scopedMetricTotal) < 1e-9
-                ? "No synthetic market value to chart (all slices ≤ $0). Refresh option greeks on Connections if you hold options — deltas must be loaded for synthetic MV."
-                : undefined
-            }
-            buckets={[
-              {
-                label: pieView,
-                totalMarketValue: scopedMetricTotal,
-                byAsset: scopedRows.map((r) => {
-                  const mv = sliceMv(r, pieMetric);
-                  return {
-                    key: r.underlyingSymbol,
-                    marketValue: mv,
-                    weight: scopedMetricTotal ? mv / scopedMetricTotal : 0,
-                  };
-                }),
-              },
-            ]}
-          />
+        <div className="mt-4 flex min-h-0 w-full min-w-0 flex-1 flex-col gap-3 lg:min-h-[min(28rem,58vh)] lg:flex-row lg:gap-4">
+          <div className="flex min-h-[min(22rem,48vh)] w-full min-w-0 flex-1 flex-col overflow-visible rounded-xl border border-zinc-200 bg-white p-2 shadow-sm dark:border-white/15 dark:bg-zinc-950 sm:p-3 lg:min-h-0">
+            <FinancePiePanel
+              layout="split"
+              title={`${pieView === "net" ? "All accounts" : pieView === "retirement" ? "Retirement" : "Brokerage"} · ${pieMetricChartSubtitle(pieMetric)}`}
+              symbolColorMap={chartSymbolColors}
+              emptyMessage={
+                pieMetric === "synthetic" && Math.abs(chartScopedMetricTotal) < 1e-9
+                  ? syntheticChartBasis === "mark"
+                    ? "No options liquidating value to chart (all slices ≤ $0). Values come from option contract marks on your positions after sync."
+                    : "No synthetic market value to chart (all slices ≤ $0). Refresh option greeks on Connections if you hold options — deltas must be loaded for synthetic MV."
+                  : undefined
+              }
+              buckets={[
+                {
+                  label: pieView,
+                  totalMarketValue: chartScopedMetricTotal,
+                  byAsset: chartScopedRows.map((r) => {
+                    const mv = sliceMv(r, pieMetric);
+                    return {
+                      key: r.underlyingSymbol.trim(),
+                      marketValue: mv,
+                      weight: chartScopedMetricTotal ? mv / chartScopedMetricTotal : 0,
+                    };
+                  }),
+                },
+              ]}
+            />
+          </div>
+          <div className="flex min-h-[min(22rem,48vh)] w-full min-w-0 flex-1 flex-col overflow-hidden rounded-xl border border-zinc-200 bg-white p-2 shadow-sm dark:border-white/15 dark:bg-zinc-950 sm:p-3 lg:min-h-0">
+            <AllocationWeightingChart
+              layout="split"
+              pieView={pieView}
+              pieMetric={pieMetric}
+              scopedRows={chartScopedRows}
+              scopedMetricTotal={chartScopedMetricTotal}
+              syntheticChartBasis={syntheticChartBasis}
+              symbolColorMap={chartSymbolColors}
+            />
+          </div>
         </div>
       </section>
 

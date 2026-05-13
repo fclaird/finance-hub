@@ -61,6 +61,8 @@ export type ExposureRow = {
   heldShares: number;
   syntheticMarketValue: number;
   syntheticShares: number;
+  /** Sum of option contract market_value for this underlying (liquidating value from snapshots). */
+  optionsMarkMarketValue: number;
 };
 
 export type BucketExposure = {
@@ -160,11 +162,13 @@ export function getUnderlyingExposureRollup(mode: DataMode = "auto"): ExposureRo
         heldShares: 0,
         syntheticMarketValue: 0,
         syntheticShares: 0,
+        optionsMarkMarketValue: 0,
       };
       prev.spotMarketValue += r.spotMarketValue;
       prev.heldShares += r.heldShares;
       prev.syntheticMarketValue += r.syntheticMarketValue;
       prev.syntheticShares += r.syntheticShares;
+      prev.optionsMarkMarketValue += r.optionsMarkMarketValue;
       bySym.set(r.underlyingSymbol, prev);
     }
   }
@@ -242,6 +246,26 @@ export function getUnderlyingExposureByBucket(mode: DataMode = "auto"): BucketEx
       synthetic_shares: number;
     }>;
 
+    const optionMarkRows = db
+      .prepare(
+        `
+        SELECT
+          us.symbol AS us_symbol,
+          sec.symbol AS option_symbol,
+          COALESCE(p.market_value, 0) AS mv
+        FROM positions p
+        JOIN securities sec ON sec.id = p.security_id
+        LEFT JOIN securities us ON us.id = sec.underlying_security_id
+        WHERE p.snapshot_id = ?
+          AND sec.security_type = 'option'
+      `,
+      )
+      .all(s.snapshot_id) as Array<{
+      us_symbol: string | null;
+      option_symbol: string | null;
+      mv: number;
+    }>;
+
     for (const r of spot) {
       const symKey = (r.symbol ?? "").trim().toUpperCase();
       if (symKey === "CASH") continue;
@@ -251,10 +275,26 @@ export function getUnderlyingExposureByBucket(mode: DataMode = "auto"): BucketEx
         heldShares: 0,
         syntheticMarketValue: 0,
         syntheticShares: 0,
+        optionsMarkMarketValue: 0,
       };
       prev.spotMarketValue += r.mv;
       prev.heldShares += r.qty ?? 0;
       map.set(symKey, prev);
+    }
+
+    for (const row of optionMarkRows) {
+      const sym = normalizeOptionUnderlying(row.us_symbol, row.option_symbol);
+      if (sym === "CASH") continue;
+      const prev = map.get(sym) ?? {
+        underlyingSymbol: sym,
+        spotMarketValue: 0,
+        heldShares: 0,
+        syntheticMarketValue: 0,
+        syntheticShares: 0,
+        optionsMarkMarketValue: 0,
+      };
+      prev.optionsMarkMarketValue += row.mv ?? 0;
+      map.set(sym, prev);
     }
 
     for (const row of syntheticRows) {
@@ -266,6 +306,7 @@ export function getUnderlyingExposureByBucket(mode: DataMode = "auto"): BucketEx
         heldShares: 0,
         syntheticMarketValue: 0,
         syntheticShares: 0,
+        optionsMarkMarketValue: 0,
       };
       const sh = row.synthetic_shares ?? 0;
       prev.syntheticShares += sh;

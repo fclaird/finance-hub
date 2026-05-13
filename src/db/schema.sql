@@ -205,6 +205,82 @@ CREATE TABLE IF NOT EXISTS earnings_events (
 CREATE INDEX IF NOT EXISTS idx_earnings_events_date ON earnings_events(earnings_date);
 CREATE INDEX IF NOT EXISTS idx_earnings_events_symbol ON earnings_events(symbol);
 
+-- Dividend model portfolios: local materialized history + optional forward weekly log (see /dividend-models).
+CREATE TABLE IF NOT EXISTS dividend_model_portfolios (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  live_started_at TEXT,
+  meta_json TEXT
+);
+
+CREATE TABLE IF NOT EXISTS dividend_model_holdings (
+  id TEXT PRIMARY KEY,
+  portfolio_id TEXT NOT NULL REFERENCES dividend_model_portfolios(id) ON DELETE CASCADE,
+  symbol TEXT NOT NULL COLLATE NOCASE,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  shares REAL,
+  avg_unit_cost REAL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(portfolio_id, symbol)
+);
+
+CREATE INDEX IF NOT EXISTS idx_dividend_model_holdings_portfolio ON dividend_model_holdings(portfolio_id, sort_order);
+
+CREATE TABLE IF NOT EXISTS dividend_model_symbol_fundamentals_snap (
+  id TEXT PRIMARY KEY,
+  symbol TEXT NOT NULL COLLATE NOCASE,
+  captured_at TEXT NOT NULL,
+  div_yield REAL,
+  annual_div_est REAL,
+  next_ex_date TEXT,
+  raw_json TEXT,
+  source TEXT NOT NULL DEFAULT 'schwab_fundamental'
+);
+
+CREATE INDEX IF NOT EXISTS idx_dividend_model_fundamentals_symbol_time ON dividend_model_symbol_fundamentals_snap(symbol, captured_at DESC);
+
+-- Mode A chart: modeled month-end aggregates (5y rear-facing; current month may be partial).
+CREATE TABLE IF NOT EXISTS dividend_model_portfolio_monthly (
+  portfolio_id TEXT NOT NULL REFERENCES dividend_model_portfolios(id) ON DELETE CASCADE,
+  month_end TEXT NOT NULL,
+  total_market_value REAL,
+  total_dividends REAL NOT NULL DEFAULT 0,
+  status TEXT NOT NULL,
+  computed_at TEXT NOT NULL,
+  is_backfilled INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (portfolio_id, month_end)
+);
+
+CREATE INDEX IF NOT EXISTS idx_dividend_model_monthly_portfolio_end ON dividend_model_portfolio_monthly(portfolio_id, month_end);
+
+CREATE TABLE IF NOT EXISTS dividend_model_portfolio_monthly_symbol (
+  portfolio_id TEXT NOT NULL,
+  symbol TEXT NOT NULL COLLATE NOCASE,
+  month_end TEXT NOT NULL,
+  month_dividends REAL NOT NULL DEFAULT 0,
+  market_value_eom REAL,
+  close_eom REAL,
+  shares_used REAL,
+  PRIMARY KEY (portfolio_id, symbol, month_end),
+  FOREIGN KEY (portfolio_id) REFERENCES dividend_model_portfolios(id) ON DELETE CASCADE
+);
+
+-- Mode B chart: forward-only weekly (Friday week key) snapshots; no historical forward rows before live_started_at.
+CREATE TABLE IF NOT EXISTS dividend_model_portfolio_forward_snap (
+  portfolio_id TEXT NOT NULL REFERENCES dividend_model_portfolios(id) ON DELETE CASCADE,
+  as_of TEXT NOT NULL,
+  nav_total REAL,
+  dividends_period REAL NOT NULL DEFAULT 0,
+  status TEXT NOT NULL,
+  computed_at TEXT NOT NULL,
+  spy_rebased_pct REAL,
+  qqq_rebased_pct REAL,
+  PRIMARY KEY (portfolio_id, as_of)
+);
+
+CREATE INDEX IF NOT EXISTS idx_dividend_model_forward_portfolio_asof ON dividend_model_portfolio_forward_snap(portfolio_id, as_of);
+
 -- Terminal X digest cache (server-side; populated by cron or manual refresh).
 CREATE TABLE IF NOT EXISTS x_digest_cache (
   id TEXT PRIMARY KEY,
@@ -249,6 +325,20 @@ CREATE TABLE IF NOT EXISTS broker_transactions (
 
 CREATE INDEX IF NOT EXISTS idx_broker_tx_account_date ON broker_transactions(account_id, trade_date);
 CREATE INDEX IF NOT EXISTS idx_broker_tx_category ON broker_transactions(strategy_category, trade_date);
+
+-- Daily allocation snapshot per underlying (NY calendar trade_date). Filled by cron / post-sync.
+CREATE TABLE IF NOT EXISTS allocation_daily_underlying (
+  trade_date TEXT NOT NULL,
+  data_mode TEXT NOT NULL,
+  scope TEXT NOT NULL,
+  symbol TEXT NOT NULL,
+  spot_market_value REAL NOT NULL,
+  synthetic_market_value REAL NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (trade_date, data_mode, scope, symbol)
+);
+
+CREATE INDEX IF NOT EXISTS idx_alloc_daily_lookup ON allocation_daily_underlying(data_mode, scope, trade_date);
 
 CREATE TABLE IF NOT EXISTS earnings_opp_metrics (
   id TEXT PRIMARY KEY,

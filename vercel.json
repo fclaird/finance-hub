@@ -1,12 +1,8 @@
 {
   "crons": [
     {
-      "path": "/api/internal/x-digest/refresh",
-      "schedule": "30 12 * * *"
-    },
-    {
-      "path": "/api/internal/x-digest/refresh",
-      "schedule": "0 18 * * *"
+      "path": "/api/internal/dividend-models/roll",
+      "schedule": "15 7 * * *"
     }
   ]
 }

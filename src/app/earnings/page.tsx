@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { usePrivacy } from "@/app/components/PrivacyProvider";
+import { SymbolLink } from "@/app/components/SymbolLink";
 import { formatUsdCompact } from "@/lib/format";
 
 type Row = {
@@ -132,7 +133,7 @@ export default function EarningsPage() {
   }
 
   return (
-    <div className="flex w-full max-w-6xl flex-1 flex-col gap-6 py-8 pl-4 pr-6">
+    <div className="flex w-full max-w-[108rem] flex-1 flex-col gap-8 py-10 pl-5 pr-6 sm:pl-6 sm:pr-8">
       <div className="flex items-start justify-between gap-4">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Earnings opportunities</h1>
@@ -231,7 +232,9 @@ export default function EarningsPage() {
             <tbody>
               {sorted.map((r) => (
                 <tr key={r.id} className="border-b border-zinc-200 dark:border-white/20">
-                  <td className="py-2 pr-4 font-medium">{r.symbol}</td>
+                  <td className="py-2 pr-4 font-medium">
+                    <SymbolLink symbol={r.symbol}>{r.symbol}</SymbolLink>
+                  </td>
                   <td className="py-2 pr-4 tabular-nums">{r.earnings_date}</td>
                   <td className="py-2 pr-4 text-right tabular-nums">{r.days_to_earnings}</td>
                   <td className="py-2 pr-4 uppercase text-zinc-600 dark:text-zinc-400">{(r.time_of_day ?? "—").toString()}</td>
