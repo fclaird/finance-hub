@@ -24,7 +24,10 @@
 # misc
 .DS_Store
 *.pem
-.cursor/
+# Cursor: ignore local workspace data, but commit shared agent rules
+.cursor/*
+!.cursor/rules/
+!.cursor/rules/**
 
 # debug
 npm-debug.log*
