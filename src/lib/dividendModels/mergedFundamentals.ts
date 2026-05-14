@@ -40,12 +40,12 @@ export async function fetchMergedDividendFundamentals(symbol: string): Promise<M
   try {
     const quotes = await fetchSchwabQuotesNormalized([sym]);
     const q = quotes.get(sym);
-    px = q?.mark ?? q?.last ?? q?.close ?? null;
+    px = q?.last ?? q?.mark ?? q?.close ?? null;
   } catch {
     /* quotes optional */
   }
 
-  let annualFromSchwab =
+  const annualFromSchwab =
     px != null && schwabDiv != null && Number.isFinite(px) && Number.isFinite(schwabDiv) && schwabDiv > 0
       ? px * schwabDiv
       : null;

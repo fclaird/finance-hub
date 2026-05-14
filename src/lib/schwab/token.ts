@@ -26,3 +26,14 @@ export function setSchwabToken(passphrase: string, token: SchwabToken) {
   saveSecrets(passphrase, { ...secrets, tokens });
 }
 
+/** Remove Schwab tokens so the app shows disconnected (e.g. after refresh_token auth failure). */
+export function clearSchwabToken(passphrase: string) {
+  const secrets = loadSecrets(passphrase);
+  const bag = { ...(secrets.tokens ?? {}) } as Record<string, unknown>;
+  delete bag.schwab;
+  saveSecrets(passphrase, {
+    ...secrets,
+    tokens: Object.keys(bag).length > 0 ? bag : undefined,
+  });
+}
+

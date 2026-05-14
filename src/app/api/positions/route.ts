@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
 
+import { logError } from "@/lib/log";
+import { fetchSchwabQuotesNormalized } from "@/lib/dividendModels/quotes";
 import { getDb } from "@/lib/db";
 import { isPosterityAccountId, notPosterityWhereSql } from "@/lib/posterity";
 import { normalizeOptionUnderlying } from "@/lib/options/optionUnderlying";
@@ -49,7 +51,12 @@ function daysToExpiration(expirationIso: string, asOfIso: string): number | null
   return Math.max(0, Math.ceil((exp - asOf) / (24 * 3600 * 1000)));
 }
 
-function buildPositionsForSnapshots(db: ReturnType<typeof getDb>, snaps: string[]) {
+function livePxFromQuote(q: { last: number | null; mark: number | null; close: number | null }): number | null {
+  const v = q.last ?? q.mark ?? q.close;
+  return v != null && Number.isFinite(v) && v > 0 ? v : null;
+}
+
+async function buildPositionsForSnapshots(db: ReturnType<typeof getDb>, snaps: string[]) {
   const today = new Date().toISOString().slice(0, 10);
   const pxRows = db
     .prepare(
@@ -113,6 +120,24 @@ function buildPositionsForSnapshots(db: ReturnType<typeof getDb>, snaps: string[
     theta: number | null;
   }>;
 
+  const equitySyms = Array.from(
+    new Set(
+      rows
+        .filter((r) => r.securityType !== "option" && r.symbol)
+        .map((r) => (r.symbol ?? "").trim().toUpperCase())
+        .filter(Boolean),
+    ),
+  );
+
+  let liveBySym = new Map<string, { last: number | null; mark: number | null; close: number | null }>();
+  if (equitySyms.length > 0) {
+    try {
+      liveBySym = await fetchSchwabQuotesNormalized(equitySyms);
+    } catch (e) {
+      logError("api_positions_live_quotes", e);
+    }
+  }
+
   const underRows = db
     .prepare(
       `
@@ -140,7 +165,9 @@ function buildPositionsForSnapshots(db: ReturnType<typeof getDb>, snaps: string[
     if (r.securityType !== "option") {
       const sym = (r.symbol ?? "").toUpperCase();
       const qpx = sym ? px.get(sym) ?? null : null;
-      const price = qpx ?? r.price;
+      const qLive = sym ? liveBySym.get(sym) : undefined;
+      const livePx = qLive ? livePxFromQuote(qLive) : null;
+      const price = livePx ?? qpx ?? r.price;
       const marketValue =
         price != null && Number.isFinite(price) ? price * (r.quantity ?? 0) : r.marketValue;
       return {
@@ -197,72 +224,81 @@ function buildPositionsForSnapshots(db: ReturnType<typeof getDb>, snaps: string[
 }
 
 export async function GET(req: Request) {
-  const url = new URL(req.url);
-  const accountIdParam = url.searchParams.get("accountId");
-  const snapshotId = url.searchParams.get("snapshotId");
+  try {
+    const url = new URL(req.url);
+    const accountIdParam = url.searchParams.get("accountId");
+    const snapshotId = url.searchParams.get("snapshotId");
 
-  const db = getDb();
-  const latest = latestSnapshotId(db);
+    const db = getDb();
+    const latest = latestSnapshotId(db);
 
-  let snaps: string[] = [];
-  let responseSnapshotLabel: string | null = null;
+    let snaps: string[] = [];
+    let responseSnapshotLabel: string | null = null;
 
-  if (accountIdParam) {
-    if (isPosterityAccountId(accountIdParam)) {
-      return NextResponse.json(
-        { ok: false, error: "Posterity accounts are not served by this route; use posterity APIs." },
-        { status: 400 },
-      );
-    }
-    const snap = db
-      .prepare(
-        `SELECT id FROM holding_snapshots WHERE account_id = ? ORDER BY as_of DESC LIMIT 1`,
-      )
-      .get(accountIdParam) as { id: string } | undefined;
-    snaps = snap ? [snap.id] : [];
-    responseSnapshotLabel = snap?.id ?? null;
-  } else if (snapshotId != null) {
-    snaps = [snapshotId];
-    responseSnapshotLabel = snapshotId;
-  } else {
-    snaps =
-      (db
+    if (accountIdParam) {
+      if (isPosterityAccountId(accountIdParam)) {
+        return NextResponse.json(
+          { ok: false, error: "Posterity accounts are not served by this route; use posterity APIs." },
+          { status: 400 },
+        );
+      }
+      const snap = db
         .prepare(
-          `
-            SELECT hs.id AS snapshot_id
-            FROM holding_snapshots hs
-            JOIN accounts a ON a.id = hs.account_id
-            WHERE a.id LIKE 'schwab_%'
-              AND ${notPosterityWhereSql("a")}
-              AND hs.as_of = (
-                SELECT MAX(hs2.as_of) FROM holding_snapshots hs2 WHERE hs2.account_id = a.id
-              )
-            ORDER BY a.name ASC
-          `,
+          `SELECT id FROM holding_snapshots WHERE account_id = ? ORDER BY as_of DESC LIMIT 1`,
         )
-        .all() as Array<{ snapshot_id: string }>).map((r) => r.snapshot_id);
-    responseSnapshotLabel = latest ?? null;
-  }
+        .get(accountIdParam) as { id: string } | undefined;
+      snaps = snap ? [snap.id] : [];
+      responseSnapshotLabel = snap?.id ?? null;
+    } else if (snapshotId != null) {
+      snaps = [snapshotId];
+      responseSnapshotLabel = snapshotId;
+    } else {
+      snaps =
+        (db
+          .prepare(
+            `
+              SELECT hs.id AS snapshot_id
+              FROM holding_snapshots hs
+              JOIN accounts a ON a.id = hs.account_id
+              WHERE a.id LIKE 'schwab_%'
+                AND ${notPosterityWhereSql("a")}
+                AND hs.as_of = (
+                  SELECT MAX(hs2.as_of) FROM holding_snapshots hs2 WHERE hs2.account_id = a.id
+                )
+              ORDER BY a.name ASC
+            `,
+          )
+          .all() as Array<{ snapshot_id: string }>).map((r) => r.snapshot_id);
+      responseSnapshotLabel = latest ?? null;
+    }
 
-  if (snaps.length === 0 && !latest && !accountIdParam) {
-    return NextResponse.json({ ok: true, snapshotId: null, positions: [] });
-  }
+    if (snaps.length === 0 && !latest && !accountIdParam) {
+      return NextResponse.json({ ok: true, snapshotId: null, positions: [] });
+    }
 
-  if (snaps.length === 0) {
+    if (snaps.length === 0) {
+      return NextResponse.json({
+        ok: true,
+        snapshotId: responseSnapshotLabel,
+        snapshots: [],
+        positions: [],
+      });
+    }
+
+    const out = await buildPositionsForSnapshots(db, snaps);
+
     return NextResponse.json({
       ok: true,
-      snapshotId: responseSnapshotLabel,
-      snapshots: [],
-      positions: [],
+      snapshotId: snapshotId ?? responseSnapshotLabel ?? latest ?? null,
+      snapshots: snaps,
+      positions: out,
     });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    logError("api_positions_get", e);
+    return NextResponse.json(
+      { ok: false, error: msg, snapshotId: null, snapshots: [], positions: [] },
+      { status: 500 },
+    );
   }
-
-  const out = buildPositionsForSnapshots(db, snaps);
-
-  return NextResponse.json({
-    ok: true,
-    snapshotId: snapshotId ?? responseSnapshotLabel ?? latest ?? null,
-    snapshots: snaps,
-    positions: out,
-  });
 }

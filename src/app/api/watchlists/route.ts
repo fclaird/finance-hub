@@ -1,13 +1,15 @@
 import { NextResponse } from "next/server";
 
+import { logError } from "@/lib/log";
 import { getDb } from "@/lib/db";
 import { newId } from "@/lib/id";
 
 export async function GET() {
-  const db = getDb();
-  const rows = db
-    .prepare(
-      `
+  try {
+    const db = getDb();
+    const rows = db
+      .prepare(
+        `
       SELECT
         w.id AS id,
         w.name AS name,
@@ -16,9 +18,14 @@ export async function GET() {
       FROM watchlists w
       ORDER BY w.created_at DESC, w.name ASC
     `,
-    )
-    .all() as Array<{ id: string; name: string; createdAt: string; itemCount: number }>;
-  return NextResponse.json({ ok: true, watchlists: rows });
+      )
+      .all() as Array<{ id: string; name: string; createdAt: string; itemCount: number }>;
+    return NextResponse.json({ ok: true, watchlists: rows });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    logError("api_watchlists_get", e);
+    return NextResponse.json({ ok: false, error: msg, watchlists: [] }, { status: 500 });
+  }
 }
 
 export async function POST(req: Request) {

@@ -4,10 +4,12 @@ import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 
 import { ExposurePositionTreemap } from "@/app/components/charts/ExposurePositionTreemap";
-import { FinancePiePanel } from "@/app/components/FinancePiePanel";
+import { DraggableControlColumn } from "@/app/components/DraggableControlColumn";
+import { FinancePiePanel, type PieBucket } from "@/app/components/FinancePiePanel";
 import { usePrivacy } from "@/app/components/PrivacyProvider";
 import { formatUsd2 } from "@/lib/format";
 import { taxonomyForSymbol as demoTaxonomyForSymbol } from "@/lib/demoTaxonomy";
+import { assignEarthToneColorsBySymbols } from "@/lib/charts/pieEarthTones";
 import { normalizeSectorLabel } from "@/lib/sectorLabel";
 
 type TaxonomyCategory = "sector" | "marketCap" | "revenueGeo";
@@ -87,6 +89,37 @@ type RolledSlice = {
   constituents: Array<{ symbol: string; marketValue: number }>;
 };
 
+function buildDiversificationPieData(
+  rolledRows: RolledSlice[],
+  expanded: ReadonlySet<string>,
+): { total: number; byAsset: PieBucket["byAsset"] } {
+  const byAsset: PieBucket["byAsset"] = [];
+  for (const r of rolledRows) {
+    if (expanded.has(r.key)) {
+      for (const c of r.constituents) {
+        if (c.marketValue <= 0) continue;
+        byAsset.push({
+          key: c.symbol,
+          marketValue: c.marketValue,
+          weight: 0,
+          constituents: [],
+        });
+      }
+    } else {
+      byAsset.push({
+        key: r.key,
+        marketValue: r.mv,
+        weight: 0,
+        constituents: r.constituents,
+      });
+    }
+  }
+  const total = byAsset.reduce((s, x) => s + x.marketValue, 0);
+  for (const x of byAsset) x.weight = total ? x.marketValue / total : 0;
+  byAsset.sort((a, b) => b.marketValue - a.marketValue || a.key.localeCompare(b.key));
+  return { total, byAsset };
+}
+
 function rollupCategory(
   rows: ExposureRow[],
   category: TaxonomyCategory,
@@ -131,6 +164,7 @@ export default function DiversificationPage() {
   const [category, setCategory] = useState<TaxonomyCategory>("sector");
   const [pieView, setPieView] = useState<"net" | "retirement" | "brokerage">("net");
   const [pieMetric, setPieMetric] = useState<PieMetric>("net");
+  const [expandedSectorKeys, setExpandedSectorKeys] = useState<string[]>([]);
 
   useEffect(() => {
     void (async () => {
@@ -189,7 +223,34 @@ export default function DiversificationPage() {
 
   const rolled = useMemo(() => rollupCategory(scopedRows, category, pieMetric, tax), [scopedRows, category, pieMetric, tax]);
 
-  const pieTotal = rolled.total;
+  const expandedSectorSet = useMemo(() => new Set(expandedSectorKeys.map((k) => k.trim()).filter(Boolean)), [expandedSectorKeys]);
+
+  const pieFromRollup = useMemo(
+    () => buildDiversificationPieData(rolled.rows, expandedSectorSet),
+    [rolled.rows, expandedSectorSet],
+  );
+
+  const pieSymbolColors = useMemo(() => {
+    const syms = pieFromRollup.byAsset.map((x) => x.key.trim().toUpperCase()).filter(Boolean);
+    return assignEarthToneColorsBySymbols(syms);
+  }, [pieFromRollup.byAsset]);
+
+  const onToggleSliceExpand = (sliceKey: string) => {
+    const k = sliceKey.trim();
+    if (!k) return;
+    setExpandedSectorKeys((prev) => {
+      const s = new Set(prev.map((x) => x.trim()).filter(Boolean));
+      if (s.has(k)) s.delete(k);
+      else s.add(k);
+      return [...s];
+    });
+  };
+
+  useEffect(() => {
+    setExpandedSectorKeys([]);
+  }, [category, pieView, pieMetric]);
+
+  const pieTotal = pieFromRollup.total;
 
   const capBySymbol = useMemo(() => {
     const m = new Map<string, number | null>();
@@ -255,32 +316,10 @@ export default function DiversificationPage() {
       </div>
 
       <section className="rounded-2xl border border-zinc-300 bg-white p-6 shadow-sm dark:border-white/20 dark:bg-zinc-950">
-        <h2 className="text-base font-semibold">Category</h2>
-        <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">Choose what each pie slice represents.</p>
-        <div className="mt-3 grid w-max max-w-full grid-cols-3 gap-1.5 sm:min-w-[15.75rem]">
-          {(
-            [
-              { key: "sector", label: "Sector" },
-              { key: "marketCap", label: "Market cap" },
-              { key: "revenueGeo", label: "Revenue geo" },
-            ] as const
-          ).map((c) => (
-            <button
-              key={c.key}
-              type="button"
-              onClick={() => setCategory(c.key)}
-              className={
-                BTN_CLASSES +
-                " min-w-[5rem] shadow-sm " +
-                (category === c.key
-                  ? "bg-zinc-900 text-white shadow dark:bg-white dark:text-zinc-900"
-                  : "border border-zinc-300 bg-white text-zinc-900 hover:bg-zinc-50 dark:border-white/20 dark:bg-zinc-950 dark:text-zinc-100 dark:hover:bg-zinc-900")
-              }
-            >
-              {c.label}
-            </button>
-          ))}
-        </div>
+        <h2 className="text-base font-semibold">Diversification mix</h2>
+        <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
+          Drag the blocks on the left by their handle to reorder. Pie slice labels are editable on click; use the chart tooltip to break a slice into individual holdings.
+        </p>
 
         {error ? (
           <div className="mt-4 rounded-xl bg-red-50 p-3 text-sm text-red-900 dark:bg-red-950/30 dark:text-red-200">
@@ -288,84 +327,138 @@ export default function DiversificationPage() {
           </div>
         ) : null}
 
-        <div className="mt-4">
-          {category === "marketCap" ? (
-            <ExposurePositionTreemap
-              leaves={rolled.rows.flatMap((r) => r.constituents)}
-              underlyingMarketCapBySymbol={capBySymbol}
-              masked={privacy.masked}
-              title={`${scopeTitle} · ${categoryTitle} · ${pieMetricChartSubtitle(pieMetric)}`}
-            />
-          ) : (
-            <FinancePiePanel
-              title={`${scopeTitle} · ${categoryTitle} · ${pieMetricChartSubtitle(pieMetric)}`}
-              buckets={[
-                {
-                  label: "tax",
-                  totalMarketValue: pieTotal,
-                  byAsset: rolled.rows.map((r) => ({
-                    key: r.key,
-                    marketValue: r.mv,
-                    weight: pieTotal ? r.mv / pieTotal : 0,
-                    constituents: r.constituents,
-                  })),
-                },
-              ]}
-            />
-          )}
-        </div>
+        <div className="mt-4 flex flex-col gap-4 lg:flex-row lg:items-start">
+          <DraggableControlColumn
+            storageKey="fh.diversification.controlOrder.v1"
+            defaultOrder={["category", "scope", "weights", "selection"]}
+            titles={{
+              category: "Category",
+              scope: "Scope",
+              weights: "Weights",
+              selection: "Current",
+            }}
+            className="w-full shrink-0 lg:w-[15.5rem]"
+            renderBlock={(id) => {
+              if (id === "category") {
+                return (
+                  <div className="grid w-full max-w-full grid-cols-1 gap-1.5">
+                    {(
+                      [
+                        { key: "sector", label: "Sector" },
+                        { key: "marketCap", label: "Market cap" },
+                        { key: "revenueGeo", label: "Revenue geo" },
+                      ] as const
+                    ).map((c) => (
+                      <button
+                        key={c.key}
+                        type="button"
+                        onClick={() => setCategory(c.key)}
+                        className={
+                          BTN_CLASSES +
+                          " min-w-0 shadow-sm " +
+                          (category === c.key
+                            ? "bg-zinc-900 text-white shadow dark:bg-white dark:text-zinc-900"
+                            : "border border-zinc-300 bg-white text-zinc-900 hover:bg-zinc-50 dark:border-white/20 dark:bg-zinc-950 dark:text-zinc-100 dark:hover:bg-zinc-900")
+                        }
+                      >
+                        {c.label}
+                      </button>
+                    ))}
+                  </div>
+                );
+              }
+              if (id === "scope") {
+                return (
+                  <div className="grid w-full max-w-full grid-cols-1 gap-1.5">
+                    {(
+                      [
+                        { key: "net", label: "Net" },
+                        { key: "brokerage", label: "Brokerage" },
+                        { key: "retirement", label: "Retirement" },
+                      ] as const
+                    ).map((v) => (
+                      <button
+                        key={v.key}
+                        type="button"
+                        onClick={() => setPieView(v.key)}
+                        className={
+                          BTN_CLASSES +
+                          " min-w-0 shadow-sm " +
+                          (pieView === v.key
+                            ? "bg-zinc-900 text-white shadow dark:bg-white dark:text-zinc-900"
+                            : "border border-zinc-300 bg-white text-zinc-900 hover:bg-zinc-50 dark:border-white/20 dark:bg-zinc-950 dark:text-zinc-100 dark:hover:bg-zinc-900")
+                        }
+                      >
+                        {v.label}
+                      </button>
+                    ))}
+                  </div>
+                );
+              }
+              if (id === "weights") {
+                return (
+                  <div className="grid w-full max-w-full grid-cols-1 gap-1.5">
+                    {(["net", "spot", "synthetic"] as const).map((m) => (
+                      <button
+                        key={m}
+                        type="button"
+                        onClick={() => setPieMetric(m)}
+                        className={
+                          BTN_CLASSES +
+                          " min-w-0 shadow-sm " +
+                          (pieMetric === m
+                            ? "bg-zinc-900 text-white shadow dark:bg-white dark:text-zinc-900"
+                            : "border border-zinc-300 bg-white text-zinc-900 hover:bg-zinc-50 dark:border-white/20 dark:bg-zinc-950 dark:text-zinc-100 dark:hover:bg-zinc-900")
+                        }
+                      >
+                        {PIE_METRIC_LABEL[m]}
+                      </button>
+                    ))}
+                  </div>
+                );
+              }
+              if (id === "selection") {
+                return (
+                  <div className="text-xs font-medium leading-relaxed text-zinc-700 dark:text-zinc-300">
+                    {scopeTitle} · {PIE_METRIC_LABEL[pieMetric]}
+                    {expandedSectorKeys.length ? (
+                      <span className="mt-1 block text-zinc-500 dark:text-zinc-500">
+                        {expandedSectorKeys.length} slice{expandedSectorKeys.length === 1 ? "" : "s"} broken out to holdings
+                      </span>
+                    ) : null}
+                  </div>
+                );
+              }
+              return null;
+            }}
+          />
 
-        <div className="mt-6 flex flex-wrap items-center justify-between gap-4 border-b border-zinc-200 pb-4 dark:border-white/15">
-          <div className="flex flex-wrap items-center gap-3">
-            <div className="text-sm font-semibold text-zinc-700 dark:text-zinc-300">Scope</div>
-            <div className="grid w-max max-w-full grid-cols-3 gap-1.5 sm:min-w-[15.75rem]">
-              {(
-                [
-                  { key: "net", label: "Net" },
-                  { key: "brokerage", label: "Brokerage" },
-                  { key: "retirement", label: "Retirement" },
-                ] as const
-              ).map((v) => (
-                <button
-                  key={v.key}
-                  type="button"
-                  onClick={() => setPieView(v.key)}
-                  className={
-                    BTN_CLASSES +
-                    " min-w-[5rem] shadow-sm " +
-                    (pieView === v.key
-                      ? "bg-zinc-900 text-white shadow dark:bg-white dark:text-zinc-900"
-                      : "border border-zinc-300 bg-white text-zinc-900 hover:bg-zinc-50 dark:border-white/20 dark:bg-zinc-950 dark:text-zinc-100 dark:hover:bg-zinc-900")
-                  }
-                >
-                  {v.label}
-                </button>
-              ))}
-            </div>
-
-            <div className="ml-2 text-sm font-semibold text-zinc-700 dark:text-zinc-300">Weights</div>
-            <div className="grid w-max max-w-full grid-cols-3 gap-1.5 sm:min-w-[15.75rem]">
-              {(["net", "spot", "synthetic"] as const).map((m) => (
-                <button
-                  key={m}
-                  type="button"
-                  onClick={() => setPieMetric(m)}
-                  className={
-                    BTN_CLASSES +
-                    " min-w-[5rem] shadow-sm " +
-                    (pieMetric === m
-                      ? "bg-zinc-900 text-white shadow dark:bg-white dark:text-zinc-900"
-                      : "border border-zinc-300 bg-white text-zinc-900 hover:bg-zinc-50 dark:border-white/20 dark:bg-zinc-950 dark:text-zinc-100 dark:hover:bg-zinc-900")
-                  }
-                >
-                  {PIE_METRIC_LABEL[m]}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <div className="text-sm font-semibold text-zinc-700 dark:text-zinc-300">
-            {scopeTitle} · {PIE_METRIC_LABEL[pieMetric]}
+          <div className="min-w-0 flex-1">
+            {category === "marketCap" ? (
+              <ExposurePositionTreemap
+                leaves={rolled.rows.flatMap((r) => r.constituents)}
+                underlyingMarketCapBySymbol={capBySymbol}
+                masked={privacy.masked}
+                title={`${scopeTitle} · ${categoryTitle} · ${pieMetricChartSubtitle(pieMetric)}`}
+              />
+            ) : (
+              <FinancePiePanel
+                title={`${scopeTitle} · ${categoryTitle} · ${pieMetricChartSubtitle(pieMetric)}`}
+                symbolColorMap={pieSymbolColors}
+                allowLabelEdit
+                labelStorageKey={`diversification-${category}`}
+                expandedSliceKeys={expandedSectorKeys}
+                onToggleSliceExpand={onToggleSliceExpand}
+                enableSliceBreakout
+                buckets={[
+                  {
+                    label: "tax",
+                    totalMarketValue: pieTotal,
+                    byAsset: pieFromRollup.byAsset,
+                  },
+                ]}
+              />
+            )}
           </div>
         </div>
       </section>

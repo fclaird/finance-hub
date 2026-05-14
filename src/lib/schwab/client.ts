@@ -1,7 +1,7 @@
 import { getSecretsPassphrase } from "@/lib/env";
 import { SCHWAB_MARKETDATA_API_BASE, SCHWAB_TRADER_API_BASE } from "@/lib/schwab/config";
-import { refreshToken } from "@/lib/schwab/oauth";
-import { getSchwabToken, setSchwabToken, type SchwabToken } from "@/lib/schwab/token";
+import { isSchwabRefreshTokenRejectedMessage, refreshToken } from "@/lib/schwab/oauth";
+import { clearSchwabToken, getSchwabToken, setSchwabToken, type SchwabToken } from "@/lib/schwab/token";
 
 const REFRESH_SKEW_MS = 60_000;
 
@@ -28,10 +28,21 @@ async function getValidToken(): Promise<SchwabToken> {
   if (!token) throw new Error("Schwab is not connected yet.");
 
   if (!isExpired(token)) return token;
-  const refreshed = await refreshToken(token.refresh_token);
-  const next: SchwabToken = { ...refreshed, obtained_at: Date.now() };
-  setSchwabToken(passphrase, next);
-  return next;
+  try {
+    const refreshed = await refreshToken(token.refresh_token);
+    const next: SchwabToken = { ...refreshed, obtained_at: Date.now() };
+    setSchwabToken(passphrase, next);
+    return next;
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (isSchwabRefreshTokenRejectedMessage(msg)) {
+      clearSchwabToken(passphrase);
+      throw new Error(
+        `${msg}\n\nSchwab disconnected locally because the refresh token is no longer valid. Open Connections and sign in to Schwab again (check SCHWAB_REDIRECT_URI matches your developer app).`,
+      );
+    }
+    throw e;
+  }
 }
 
 /** Calendar YYYY-MM-DD in America/New_York for an instant (fallback when HTTP Date is missing). */

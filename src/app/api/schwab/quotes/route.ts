@@ -3,6 +3,8 @@ import { NextResponse } from "next/server";
 import { getDb } from "@/lib/db";
 import { latestSnapshotId } from "@/lib/snapshots";
 import { schwabMarketFetch } from "@/lib/schwab/client";
+import { schwabQuoteObjectFromEntry } from "@/lib/schwab/quoteEntry";
+import { schwabQuoteDisplayPrice } from "@/lib/market/schwabQuoteDisplay";
 
 function asNumber(v: unknown): number | null {
   if (typeof v === "number" && Number.isFinite(v)) return v;
@@ -10,21 +12,16 @@ function asNumber(v: unknown): number | null {
   return null;
 }
 
-function extractQuoteObject(entry: unknown): Record<string, unknown> | null {
-  if (!entry || typeof entry !== "object") return null;
-  const obj = entry as Record<string, unknown>;
-  const quote = obj.quote;
-  if (quote && typeof quote === "object") return quote as Record<string, unknown>;
-  return obj;
-}
-
 function pickPrice(quote: Record<string, unknown>): number | null {
+  const rawLast = asNumber(quote.lastPrice) ?? null;
+  const mark = asNumber(quote.mark) ?? null;
+  const close = asNumber(quote.closePrice) ?? null;
+  const display = schwabQuoteDisplayPrice(rawLast, mark, close);
+  if (display != null && display > 0) return display;
   return (
-    asNumber(quote.lastPrice) ??
-    asNumber(quote.mark) ??
     asNumber(quote.bid) ??
     asNumber(quote.ask) ??
-    asNumber(quote.closePrice) ??
+    (close != null && close > 0 ? close : null) ??
     null
   );
 }
@@ -68,7 +65,7 @@ export async function POST() {
 
     for (const sym of batch) {
       const entry = (resp as Record<string, unknown>)[sym] ?? (resp as Record<string, unknown>)[sym.toUpperCase()];
-      const quote = extractQuoteObject(entry);
+      const quote = schwabQuoteObjectFromEntry(entry);
       if (!quote) continue;
       const px = pickPrice(quote);
       if (px == null || px <= 0) continue;

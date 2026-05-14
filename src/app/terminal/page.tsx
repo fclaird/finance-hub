@@ -95,9 +95,26 @@ function num(v: number | null) {
   return typeof v === "number" && Number.isFinite(v) ? v : null;
 }
 
+/** `last` is reconciled server-side (`/api/quotes`); fall back to `mark` if absent. */
+function quoteDisplaySpot(q: NormalizedQuote): number | null {
+  return num(q.last) ?? num(q.mark);
+}
+
 function volRatioLabel(ratio: number | null) {
   if (ratio == null || !Number.isFinite(ratio)) return "—";
   return ratio >= 10 ? `${ratio.toFixed(0)}×` : `${ratio.toFixed(1)}×`;
+}
+
+async function terminalFetchJson<T>(resp: Response, context: string): Promise<T> {
+  const raw = await resp.text();
+  if (!raw.trim()) {
+    throw new Error(`${context}: empty response (${resp.status})`);
+  }
+  try {
+    return JSON.parse(raw) as T;
+  } catch {
+    throw new Error(`${context}: invalid JSON from server (${resp.status})`);
+  }
 }
 
 /** Header control only — must sit inside a single parent `<th>` (never wrap in another `<th>`). */
@@ -165,7 +182,7 @@ export default function TerminalPage() {
 
   async function loadWatchlists() {
     const resp = await fetch("/api/watchlists", { cache: "no-store" });
-    const json = (await resp.json()) as { ok: boolean; watchlists?: WatchlistRow[]; error?: string };
+    const json = await terminalFetchJson<{ ok: boolean; watchlists?: WatchlistRow[]; error?: string }>(resp, "watchlists");
     if (!json.ok) throw new Error(json.error ?? "Failed to load watchlists");
     setWatchlists(json.watchlists ?? []);
   }
@@ -176,7 +193,7 @@ export default function TerminalPage() {
     if (heatView === "portfolio" && nextWatchlistId) params.set("watchlistId", nextWatchlistId);
     const q = params.toString() ? `?${params.toString()}` : "";
     const resp = await fetch(`/api/terminal/universe${q}`, { cache: "no-store" });
-    const json = (await resp.json()) as { ok: boolean; symbols?: string[]; error?: string };
+    const json = await terminalFetchJson<{ ok: boolean; symbols?: string[]; error?: string }>(resp, "terminal universe");
     if (!json.ok) throw new Error(json.error ?? "Failed to load terminal universe");
     setSymbols(json.symbols ?? []);
   }
@@ -192,7 +209,10 @@ export default function TerminalPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ symbols: symList }),
       });
-      const json = (await resp.json()) as { ok?: boolean; names?: Record<string, string | null> };
+      const json = await terminalFetchJson<{ ok?: boolean; names?: Record<string, string | null> }>(
+        resp,
+        "company names",
+      );
       if (!json.ok || !json.names) return;
       const m = new Map<string, string>();
       for (const [k, v] of Object.entries(json.names)) {
@@ -216,7 +236,10 @@ export default function TerminalPage() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ symbols: symList }),
     });
-    const json = (await resp.json()) as { ok: boolean; quotes?: NormalizedQuote[]; error?: string };
+    const json = await terminalFetchJson<{ ok: boolean; quotes?: NormalizedQuote[]; error?: string }>(
+      resp,
+      "quotes",
+    );
     if (!json.ok) throw new Error(json.error ?? "Failed to load quotes");
     setQuotes(json.quotes ?? []);
     setLastUpdatedAt(new Date().toISOString());
@@ -232,11 +255,11 @@ export default function TerminalPage() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ symbols: symList }),
     });
-    const json = (await resp.json()) as {
+    const json = await terminalFetchJson<{
       ok: boolean;
       anomalies?: Record<string, VolumeInfo>;
       error?: string;
-    };
+    }>(resp, "volume anomalies");
     if (!json.ok) throw new Error(json.error ?? "Failed to load volume anomalies");
     const m = new Map<string, VolumeInfo>();
     for (const [k, v] of Object.entries(json.anomalies ?? {})) m.set(k.toUpperCase(), v);
@@ -246,7 +269,7 @@ export default function TerminalPage() {
   async function loadHeatmap(nextWatchlistId: string | null) {
     const wl = nextWatchlistId ? `&watchlistId=${encodeURIComponent(nextWatchlistId)}` : "";
     const resp = await fetch(`/api/terminal/heatmap?view=${encodeURIComponent(heatView)}${wl}`, { cache: "no-store" });
-    const json = (await resp.json()) as { ok: boolean; items?: HeatmapItem[]; error?: string };
+    const json = await terminalFetchJson<{ ok: boolean; items?: HeatmapItem[]; error?: string }>(resp, "heatmap");
     if (!json.ok) throw new Error(json.error ?? "Failed to load heatmap");
     setHeatItems(json.items ?? []);
   }
@@ -254,7 +277,7 @@ export default function TerminalPage() {
   async function loadMovers(nextWatchlistId: string | null) {
     const wl = nextWatchlistId ? `&watchlistId=${encodeURIComponent(nextWatchlistId)}` : "";
     const resp = await fetch(`/api/terminal/movers?scope=combined&top=50${wl}`, { cache: "no-store" });
-    const json = (await resp.json()) as MoversPayload;
+    const json = await terminalFetchJson<MoversPayload>(resp, "movers");
     setMovers(json);
   }
 
@@ -263,7 +286,7 @@ export default function TerminalPage() {
       const qs = new URLSearchParams();
       if (nextWatchlistId) qs.set("watchlistId", nextWatchlistId);
       const resp = await fetch(`/api/terminal/option-flow?${qs.toString()}`, { cache: "no-store" });
-      const json = (await resp.json()) as OptionFlowPayload;
+      const json = await terminalFetchJson<OptionFlowPayload>(resp, "option flow");
       setOptionFlow(json);
     } catch (e) {
       setOptionFlow({
@@ -292,10 +315,10 @@ export default function TerminalPage() {
   async function loadFutures() {
     try {
       const resp = await fetch("/api/terminal/futures", { cache: "no-store" });
-      const json = (await resp.json()) as {
+      const json = await terminalFetchJson<{
         ok: boolean;
         items?: Array<{ symbol: string; quote: NormalizedQuote; series: Array<{ date: string; close: number }> }>;
-      };
+      }>(resp, "futures");
       if (json.ok) setFuturesItems(json.items ?? []);
     } catch {
       // ignore
@@ -427,10 +450,10 @@ export default function TerminalPage() {
       void (async () => {
         try {
           const posResp = await fetch("/api/positions", { cache: "no-store" });
-          const posJson = (await posResp.json()) as {
+          const posJson = await terminalFetchJson<{
             ok: boolean;
             positions?: Array<{ symbol: string | null; marketValue: number | null }>;
-          };
+          }>(posResp, "positions");
           if (!posJson.ok) {
             setPositionMvBySym(new Map());
             return;
@@ -454,7 +477,7 @@ export default function TerminalPage() {
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ symbols: ["SPY", "QQQ"] }),
           });
-          const idxJson = (await idxResp.json()) as { ok: boolean; quotes?: NormalizedQuote[] };
+          const idxJson = await terminalFetchJson<{ ok: boolean; quotes?: NormalizedQuote[] }>(idxResp, "index quotes");
           for (const q of idxJson.quotes ?? []) qMap.set(q.symbol.toUpperCase(), q);
 
           let cur = 0;
@@ -873,6 +896,7 @@ export default function TerminalPage() {
                   const chg = q.change ?? null;
                   const chgPct = q.changePercent == null ? null : q.changePercent * 100;
                   const v = volumeInfo.get(q.symbol);
+                  const spot = quoteDisplaySpot(q);
                   return (
                     <tr
                       key={q.symbol}
@@ -898,8 +922,13 @@ export default function TerminalPage() {
                           }
                           case "last":
                             return (
-                              <td key={c} className={"py-2 pr-4 text-right tabular-nums " + priceDirClass(q.last, q.close)}>
-                                {q.last == null ? "—" : q.last.toFixed(2)}
+                              <td
+                                key={c}
+                                className={
+                                  "py-2 pr-4 text-right tabular-nums " + priceDirClass(spot, q.close)
+                                }
+                              >
+                                {spot == null ? "—" : spot.toFixed(2)}
                               </td>
                             );
                           case "chg":

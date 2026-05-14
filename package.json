@@ -6,6 +6,7 @@
   "author": "Finance Hub",
   "main": "desktop/main.cjs",
   "scripts": {
+    "postinstall": "npm rebuild better-sqlite3",
     "dev": "next dev --experimental-https",
     "dev:webpack": "next dev --experimental-https --webpack",
     "build": "next build",
@@ -16,6 +17,7 @@
     "desktop:pack": "next build && npm run desktop:prepare && electron-builder --dir",
     "desktop:dist": "next build && npm run desktop:prepare && electron-builder",
     "lint": "eslint",
+    "rebuild:sqlite": "npm rebuild better-sqlite3",
     "digest:pdf": "npx tsx scripts/pdf-allocation-report.ts",
     "digest:notify": "npx tsx scripts/trigger-digest-notify.ts",
     "backfill:portfolio-snapshots": "npx tsx scripts/backfill-portfolio-snapshots.ts"

@@ -3,6 +3,39 @@ import crypto from "node:crypto";
 import { SCHWAB_OAUTH_AUTHORIZE_URL, SCHWAB_OAUTH_TOKEN_URL, getSchwabConfig } from "@/lib/schwab/config";
 import type { SchwabToken } from "@/lib/schwab/token";
 
+/** Authorization-code exchange must return both tokens (snake_case or camelCase). */
+function parseSchwabTokenFromExchange(json: unknown): Omit<SchwabToken, "obtained_at"> {
+  const j = (json && typeof json === "object" ? json : {}) as Record<string, unknown>;
+  const access_token = String(j.access_token ?? j.accessToken ?? "");
+  const refresh_token = String(j.refresh_token ?? j.refreshToken ?? "");
+  const token_type = String(j.token_type ?? j.tokenType ?? "Bearer");
+  const expRaw = j.expires_in ?? j.expiresIn ?? 1800;
+  const expires_in =
+    typeof expRaw === "number" && Number.isFinite(expRaw) ? expRaw : Number(String(expRaw)) || 1800;
+  const scope = j.scope != null ? String(j.scope) : undefined;
+  if (!access_token) throw new Error("Schwab token exchange: missing access_token");
+  if (!refresh_token) throw new Error("Schwab token exchange: missing refresh_token");
+  return { access_token, refresh_token, token_type, expires_in, scope };
+}
+
+/**
+ * Refresh responses often include a new access token only; keep prior refresh_token when omitted.
+ */
+function parseSchwabTokenFromRefresh(json: unknown, priorRefresh: string): Omit<SchwabToken, "obtained_at"> {
+  const j = (json && typeof json === "object" ? json : {}) as Record<string, unknown>;
+  const access_token = String(j.access_token ?? j.accessToken ?? "");
+  const fromBody = String(j.refresh_token ?? j.refreshToken ?? "");
+  const refresh_token = fromBody || priorRefresh;
+  const token_type = String(j.token_type ?? j.tokenType ?? "Bearer");
+  const expRaw = j.expires_in ?? j.expiresIn ?? 1800;
+  const expires_in =
+    typeof expRaw === "number" && Number.isFinite(expRaw) ? expRaw : Number(String(expRaw)) || 1800;
+  const scope = j.scope != null ? String(j.scope) : undefined;
+  if (!access_token) throw new Error("Schwab token refresh: missing access_token");
+  if (!refresh_token) throw new Error("Schwab token refresh: missing refresh_token");
+  return { access_token, refresh_token, token_type, expires_in, scope };
+}
+
 export function buildSchwabAuthorizeUrl(state: string): string {
   const { clientId, redirectUri } = getSchwabConfig();
   const url = new URL(SCHWAB_OAUTH_AUTHORIZE_URL);
@@ -41,7 +74,16 @@ export async function exchangeCodeForToken(code: string): Promise<Omit<SchwabTok
     const text = await resp.text().catch(() => "");
     throw new Error(`Schwab token exchange failed: ${resp.status} ${resp.statusText} ${text}`);
   }
-  return (await resp.json()) as Omit<SchwabToken, "obtained_at">;
+  return parseSchwabTokenFromExchange(await resp.json());
+}
+
+/** True when Schwab will not accept this refresh token again (reconnect required). */
+export function isSchwabRefreshTokenRejectedMessage(message: string): boolean {
+  return (
+    /refresh_token_authentication_error/i.test(message) ||
+    /Failed refresh token authentication/i.test(message) ||
+    /invalid[_ ]?grant/i.test(message)
+  );
 }
 
 export async function refreshToken(refresh_token: string): Promise<Omit<SchwabToken, "obtained_at">> {
@@ -63,6 +105,6 @@ export async function refreshToken(refresh_token: string): Promise<Omit<SchwabTo
     const text = await resp.text().catch(() => "");
     throw new Error(`Schwab token refresh failed: ${resp.status} ${resp.statusText} ${text}`);
   }
-  return (await resp.json()) as Omit<SchwabToken, "obtained_at">;
+  return parseSchwabTokenFromRefresh(await resp.json(), refresh_token);
 }
 

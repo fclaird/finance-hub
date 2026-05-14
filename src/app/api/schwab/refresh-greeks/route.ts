@@ -4,6 +4,7 @@ import { getDb } from "@/lib/db";
 import { newId } from "@/lib/id";
 import { carryForwardGreeksFromPriorSnapshots, getLatestSchwabSnapshotIds } from "@/lib/schwab/greeksCarryForward";
 import { schwabMarketFetch } from "@/lib/schwab/client";
+import { schwabQuoteObjectFromEntry } from "@/lib/schwab/quoteEntry";
 
 type QuotePayload = Record<string, unknown>;
 
@@ -20,14 +21,6 @@ function pickGreek(quote: Record<string, unknown>, key: string): number | null {
     asNumber(quote[key.toUpperCase()]) ??
     null
   );
-}
-
-function extractQuoteObject(entry: unknown): Record<string, unknown> | null {
-  if (!entry || typeof entry !== "object") return null;
-  const obj = entry as Record<string, unknown>;
-  const quote = obj.quote;
-  if (quote && typeof quote === "object") return quote as Record<string, unknown>;
-  return obj;
 }
 
 export async function POST() {
@@ -98,7 +91,7 @@ export async function POST() {
 
     for (const sym of batch) {
       const entry = (resp as Record<string, unknown>)[sym] ?? (resp as Record<string, unknown>)[sym.toUpperCase()];
-      const quote = extractQuoteObject(entry);
+      const quote = schwabQuoteObjectFromEntry(entry);
       if (!quote) continue;
 
       const delta = pickGreek(quote, "delta");

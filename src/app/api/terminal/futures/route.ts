@@ -2,20 +2,14 @@ import { NextResponse } from "next/server";
 
 import { ensureBenchmarkHistory, getCachedBenchmarkSeries } from "@/lib/market/benchmarks";
 import { normalizeSchwabQuoteSymbol } from "@/lib/market/schwabSymbol";
+import { schwabQuoteDisplayPrice } from "@/lib/market/schwabQuoteDisplay";
 import { schwabMarketFetch } from "@/lib/schwab/client";
+import { schwabQuoteObjectFromEntry } from "@/lib/schwab/quoteEntry";
 
 function asNumber(v: unknown): number | null {
   if (typeof v === "number" && Number.isFinite(v)) return v;
   if (typeof v === "string" && v.trim() !== "" && Number.isFinite(Number(v))) return Number(v);
   return null;
-}
-
-function extractQuoteObject(entry: unknown): Record<string, unknown> | null {
-  if (!entry || typeof entry !== "object") return null;
-  const obj = entry as Record<string, unknown>;
-  const quote = obj.quote;
-  if (quote && typeof quote === "object") return quote as Record<string, unknown>;
-  return obj;
 }
 
 type NormalizedQuote = {
@@ -38,7 +32,7 @@ function parseQuoteBatch(resp: Record<string, unknown>, batch: string[], nowIso:
   const out: NormalizedQuote[] = [];
   for (const sym of batch) {
     const entry = resp[sym] ?? resp[sym.toUpperCase()];
-    const q = extractQuoteObject(entry);
+    const q = schwabQuoteObjectFromEntry(entry);
     if (!q) {
       out.push({
         symbol: sym,
@@ -57,7 +51,7 @@ function parseQuoteBatch(resp: Record<string, unknown>, batch: string[], nowIso:
       });
       continue;
     }
-    const last = asNumber(q.lastPrice) ?? null;
+    const rawLast = asNumber(q.lastPrice) ?? null;
     const bid = asNumber(q.bidPrice ?? q.bid) ?? null;
     const ask = asNumber(q.askPrice ?? q.ask) ?? null;
     const mark = asNumber(q.mark) ?? null;
@@ -66,6 +60,7 @@ function parseQuoteBatch(resp: Record<string, unknown>, batch: string[], nowIso:
     const high = asNumber(q.highPrice) ?? null;
     const low = asNumber(q.lowPrice) ?? null;
     const volume = asNumber(q.totalVolume ?? q.volume) ?? null;
+    const last = schwabQuoteDisplayPrice(rawLast, mark, close);
     const change = asNumber(q.netChange ?? q.change) ?? (last != null && close != null ? last - close : null);
     const changePercent =
       asNumber(q.netPercentChangeInDouble ?? q.changePercent) ??

@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 
 import { getSecretsPassphrase } from "@/lib/env";
 import { exchangeCodeForToken } from "@/lib/schwab/oauth";
+import { consumeSchwabOAuthState, forgetSchwabOAuthState } from "@/lib/schwab/oauthStateMemory";
 import { setSchwabToken } from "@/lib/schwab/token";
 
 const STATE_COOKIE = "schwab_oauth_state";
@@ -22,15 +23,24 @@ export async function GET(req: Request) {
 
   const jar = await cookies();
   const expectedState = jar.get(STATE_COOKIE)?.value;
-  jar.delete(STATE_COOKIE);
-  if (!expectedState || expectedState !== state) {
+  const cookieOk = Boolean(expectedState && expectedState === state);
+  let memoryOk = false;
+  if (!cookieOk) {
+    memoryOk = consumeSchwabOAuthState(state);
+  } else {
+    forgetSchwabOAuthState(state);
+  }
+
+  if (!cookieOk && !memoryOk) {
+    jar.delete(STATE_COOKIE);
     return NextResponse.json({ ok: false, error: "Invalid state" }, { status: 400 });
   }
+
+  jar.delete(STATE_COOKIE);
 
   const token = await exchangeCodeForToken(code);
   setSchwabToken(getSecretsPassphrase(), { ...token, obtained_at: Date.now() });
 
-  // Let middleware/home gate know we're connected (no secrets, best-effort).
   jar.set("fh_schwab_connected", "1", {
     httpOnly: false,
     sameSite: "lax",
@@ -41,4 +51,3 @@ export async function GET(req: Request) {
 
   return NextResponse.redirect(new URL("/allocation", url));
 }
-

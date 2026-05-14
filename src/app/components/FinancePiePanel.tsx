@@ -21,6 +21,34 @@ import { Cell, Pie, PieChart, ResponsiveContainer, Tooltip, type PieLabelRenderP
 const PCT2 = new Intl.NumberFormat(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const RAD = Math.PI / 180;
 
+const PIE_LABEL_OVERRIDES_PREFIX = "financeHub.pieLabelOverrides.v1::";
+
+function readLabelOverrides(storageKey: string): Record<string, string> {
+  if (typeof window === "undefined") return {};
+  try {
+    const raw = window.localStorage.getItem(PIE_LABEL_OVERRIDES_PREFIX + storageKey);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== "object") return {};
+    const out: Record<string, string> = {};
+    for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+      if (typeof v === "string" && v.trim()) out[k] = v.trim();
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+function writeLabelOverrides(storageKey: string, map: Record<string, string>) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(PIE_LABEL_OVERRIDES_PREFIX + storageKey, JSON.stringify(map));
+  } catch {
+    /* ignore quota */
+  }
+}
+
 /** Match Recharts `polarToCartesian` (angle in degrees, 0° = 3 o'clock). */
 function polarToCartesian(cx: number, cy: number, radius: number, angleDeg: number) {
   return {
@@ -253,6 +281,15 @@ export function FinancePiePanel({
   symbolColorMap,
   /** `split`: denser margins, larger pie, labels match allocation bar Y-axis (size/weight/color). */
   layout = "default",
+  /** When set with `labelStorageKey`, slice labels can be renamed and persist in localStorage (canonical key → display text). */
+  allowLabelEdit = false,
+  labelStorageKey,
+  /** Slices whose constituents are shown as their own pie slices (parent page state). */
+  expandedSliceKeys,
+  /** Toggle expanded/breakout for a slice (e.g. sector → symbols). */
+  onToggleSliceExpand,
+  /** Show “Break out” in the tooltip when constituents exist. */
+  enableSliceBreakout = false,
 }: {
   title: string;
   buckets: PieBucket[];
@@ -262,6 +299,11 @@ export function FinancePiePanel({
   footer?: ReactNode;
   symbolColorMap?: Map<string, string>;
   layout?: "default" | "split";
+  allowLabelEdit?: boolean;
+  labelStorageKey?: string;
+  expandedSliceKeys?: readonly string[];
+  onToggleSliceExpand?: (sliceKey: string) => void;
+  enableSliceBreakout?: boolean;
 }) {
   const privacy = usePrivacy();
   const router = useRouter();
@@ -269,11 +311,56 @@ export function FinancePiePanel({
   const split = layout === "split";
   const chartWrapRef = useRef<HTMLDivElement>(null);
   const [measuredChart, setMeasuredChart] = useState<{ w: number; h: number } | null>(null);
+  const [labelOverrides, setLabelOverrides] = useState<Record<string, string>>({});
+  const [editingSliceKey, setEditingSliceKey] = useState<string | null>(null);
+  const [editingDraft, setEditingDraft] = useState("");
+
+  const persistKey = allowLabelEdit && labelStorageKey ? labelStorageKey : null;
+
+  useEffect(() => {
+    if (!persistKey) {
+      setLabelOverrides({});
+      return;
+    }
+    setLabelOverrides(readLabelOverrides(persistKey));
+  }, [persistKey]);
+
+  const expandedSet = useMemo(
+    () => new Set((expandedSliceKeys ?? []).map((k) => k.trim()).filter(Boolean)),
+    [expandedSliceKeys],
+  );
+
+  useEffect(() => {
+    if (!editingSliceKey) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setEditingSliceKey(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [editingSliceKey]);
+
+  useEffect(() => {
+    if (!editingSliceKey) {
+      setEditingDraft("");
+      return;
+    }
+    const k = editingSliceKey.trim();
+    setEditingDraft(labelOverrides[k] ?? k);
+  }, [editingSliceKey, labelOverrides]);
+
   const b = buckets[0];
   const rawAssets = b?.byAsset ?? [];
-  const data = rawAssets
+  const baseRows = rawAssets
     .filter((x) => x.marketValue > 0)
     .sort((a, b2) => b2.marketValue - a.marketValue || a.key.localeCompare(b2.key));
+
+  const data = useMemo(() => {
+    return baseRows.map((row) => {
+      const k = (row.key ?? "").trim();
+      const pieDisplayName = (labelOverrides[k] ?? k).trim() || k;
+      return { ...row, pieDisplayName };
+    });
+  }, [baseRows, labelOverrides]);
 
   useLayoutEffect(() => {
     if (data.length === 0) return;
@@ -409,20 +496,46 @@ export function FinancePiePanel({
                       if (!active || !payload?.length) return null;
                       const row = payload[0]?.payload as {
                         key?: string;
+                        pieDisplayName?: string;
                         marketValue?: number;
                         constituents?: PieSliceConstituent[];
                       };
                       const mv = Number(row.marketValue);
                       if (!Number.isFinite(mv)) return null;
                       const pct = total ? mv / total : 0;
-                      const label = row.key ?? "—";
+                      const canonical = (row.key ?? "").trim();
+                      const label = (row.pieDisplayName ?? row.key ?? "—").trim() || "—";
                       const list = row.constituents?.filter((c) => c.marketValue > 0) ?? [];
+                      const canBreak =
+                        enableSliceBreakout &&
+                        typeof onToggleSliceExpand === "function" &&
+                        list.length > 0 &&
+                        !expandedSet.has(canonical);
+                      const canCollapse =
+                        enableSliceBreakout &&
+                        typeof onToggleSliceExpand === "function" &&
+                        expandedSet.has(canonical);
                       return (
                         <div className="max-w-xs rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm shadow-md dark:border-white/20 dark:bg-zinc-900">
                           <div className="font-semibold text-zinc-900 dark:text-zinc-100">{label}</div>
                           <div className="mt-0.5 tabular-nums text-zinc-700 dark:text-zinc-300">
                             {formatUsd2(mv, { mask: privacy.masked })} ({PCT2.format(pct * 100)}%)
                           </div>
+                          {canBreak || canCollapse ? (
+                            <div className="mt-2 border-t border-zinc-200 pt-2 dark:border-white/20">
+                              <button
+                                type="button"
+                                className="w-full rounded-md border border-zinc-300 bg-zinc-50 px-2 py-1.5 text-xs font-semibold text-zinc-800 hover:bg-zinc-100 dark:border-white/20 dark:bg-zinc-800 dark:text-zinc-100 dark:hover:bg-zinc-700"
+                                onClick={(e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  onToggleSliceExpand?.(canonical);
+                                }}
+                              >
+                                {canCollapse ? "Merge slice (collapse holdings)" : "Break out into holdings"}
+                              </button>
+                            </div>
+                          ) : null}
                           {list.length ? (
                             <ul className="mt-2 max-h-52 space-y-1 overflow-y-auto border-t border-zinc-200 pt-2 text-xs dark:border-white/20">
                               {list.map((c) => (
@@ -444,7 +557,7 @@ export function FinancePiePanel({
                   <Pie
                     data={data}
                     dataKey="marketValue"
-                    nameKey="key"
+                    nameKey="pieDisplayName"
                     stroke="none"
                     isAnimationActive={false}
                     innerRadius={innerR}
@@ -531,12 +644,17 @@ export function FinancePiePanel({
                       );
                       const { lx, ly } = fit;
                       const anchor: "start" | "end" = sign > 0 ? "start" : "end";
-                      const raw = String(name ?? "").trim();
+                      const displayRaw = String(name ?? "").trim();
+                      const canonicalKey = String(data[idx]?.key ?? "").trim();
                       const maxLen = split ? 36 : compact ? 12 : 22;
-                      const short = raw.length > maxLen ? `${raw.slice(0, maxLen - 1)}…` : raw;
-                      const entryKey = raw;
-                      const sliceLabelColor = symbolColorMap?.get(entryKey);
-                      const href = split ? symbolPageHref(raw) : null;
+                      const short =
+                        displayRaw.length > maxLen ? `${displayRaw.slice(0, maxLen - 1)}…` : displayRaw;
+                      const sliceLabelColor = symbolColorMap?.get(canonicalKey);
+                      const href = split ? symbolPageHref(canonicalKey) : null;
+                      const beginEdit = () => {
+                        if (!allowLabelEdit || !canonicalKey) return;
+                        setEditingSliceKey(canonicalKey);
+                      };
                       return (
                         <text
                           x={lx}
@@ -554,18 +672,39 @@ export function FinancePiePanel({
                           style={{
                             fontSize: labelFontPx,
                             fontWeight: labelFontWeight,
-                            cursor: href ? "pointer" : undefined,
+                            cursor:
+                              href && allowLabelEdit
+                                ? "pointer"
+                                : href
+                                  ? "pointer"
+                                  : allowLabelEdit
+                                    ? "text"
+                                    : undefined,
                           }}
-                          onClick={
-                            href
-                              ? (e) => {
-                                  e.preventDefault();
-                                  router.push(href);
-                                }
-                              : undefined
-                          }
+                          onClick={(e) => {
+                            if (allowLabelEdit && !split) {
+                              e.preventDefault();
+                              beginEdit();
+                              return;
+                            }
+                            if (href) {
+                              e.preventDefault();
+                              router.push(href);
+                            }
+                          }}
+                          onDoubleClick={(e) => {
+                            if (allowLabelEdit && split && canonicalKey) {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              beginEdit();
+                            }
+                          }}
                         >
-                          {href ? <title>Open in Terminal</title> : null}
+                          {href ? (
+                            <title>{allowLabelEdit ? "Open in Terminal (double-click label to rename)" : "Open in Terminal"}</title>
+                          ) : allowLabelEdit ? (
+                            <title>Click to rename label</title>
+                          ) : null}
                           {split || !compact ? `${short} ${PCT2.format(p * 100)}%` : `${PCT2.format(p * 100)}%`}
                         </text>
                       );
@@ -583,6 +722,63 @@ export function FinancePiePanel({
           </>
         )}
       </div>
+      {allowLabelEdit && editingSliceKey && persistKey ? (
+        <div
+          className={
+            "mt-3 flex flex-wrap items-end gap-2 rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2.5 dark:border-white/15 dark:bg-zinc-900/60 " +
+            (split ? "shrink-0" : "")
+          }
+        >
+          <div className="min-w-[10rem] flex-1">
+            <label className="text-xs font-medium text-zinc-600 dark:text-zinc-400" htmlFor="pie-label-edit-input">
+              Display label ({editingSliceKey})
+            </label>
+            <input
+              id="pie-label-edit-input"
+              className="mt-1 w-full rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-sm text-zinc-900 shadow-sm focus:border-zinc-500 focus:outline-none focus:ring-1 focus:ring-zinc-500 dark:border-white/20 dark:bg-zinc-950 dark:text-zinc-100"
+              value={editingDraft}
+              onChange={(e) => setEditingDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  const k = editingSliceKey.trim();
+                  const d = editingDraft.trim();
+                  const next = { ...labelOverrides };
+                  if (!d || d === k) delete next[k];
+                  else next[k] = d;
+                  setLabelOverrides(next);
+                  writeLabelOverrides(persistKey, next);
+                  setEditingSliceKey(null);
+                }
+              }}
+              autoFocus
+            />
+          </div>
+          <button
+            type="button"
+            className="rounded-md bg-zinc-900 px-3 py-1.5 text-xs font-semibold text-white hover:bg-zinc-800 dark:bg-white dark:text-zinc-900 dark:hover:bg-zinc-100"
+            onClick={() => {
+              const k = editingSliceKey.trim();
+              const d = editingDraft.trim();
+              const next = { ...labelOverrides };
+              if (!d || d === k) delete next[k];
+              else next[k] = d;
+              setLabelOverrides(next);
+              writeLabelOverrides(persistKey, next);
+              setEditingSliceKey(null);
+            }}
+          >
+            Save
+          </button>
+          <button
+            type="button"
+            className="rounded-md border border-zinc-300 bg-white px-3 py-1.5 text-xs font-semibold text-zinc-800 hover:bg-zinc-50 dark:border-white/20 dark:bg-zinc-950 dark:text-zinc-100 dark:hover:bg-zinc-900"
+            onClick={() => setEditingSliceKey(null)}
+          >
+            Cancel
+          </button>
+        </div>
+      ) : null}
       {footer ? (
         <div className={"border-t border-zinc-200 pt-3 dark:border-white/15 " + (split ? "mt-2 shrink-0" : "mt-3")}>
           {footer}

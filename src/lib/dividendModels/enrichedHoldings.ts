@@ -63,7 +63,7 @@ export async function loadEnrichedHoldings(
   return holdings.map((h) => {
     const sym = h.symbol.toUpperCase();
     const q = quotes.get(sym);
-    const quotePx = q?.mark ?? q?.last ?? q?.close;
+    const quotePx = q?.last ?? q?.mark ?? q?.close;
     const snap = db
       .prepare(
         `

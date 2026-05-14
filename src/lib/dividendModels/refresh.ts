@@ -248,7 +248,7 @@ async function upsertForwardPartialWeek(
   for (const h of holdings) {
     if (h.shares == null || !Number.isFinite(h.shares)) continue;
     const q = quotes.get(h.symbol.toUpperCase());
-    const px = q?.mark ?? q?.last ?? q?.close;
+    const px = q?.last ?? q?.mark ?? q?.close;
     if (px == null || !Number.isFinite(px)) continue;
     nav += px * h.shares;
   }

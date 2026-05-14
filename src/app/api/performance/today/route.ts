@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import { getDb } from "@/lib/db";
 import { latestSnapshotId } from "@/lib/snapshots";
 import { schwabMarketFetch } from "@/lib/schwab/client";
+import { schwabQuoteObjectFromEntry } from "@/lib/schwab/quoteEntry";
 import { notPosterityWhereSql } from "@/lib/posterity";
 
 function normSym(s: string) {
@@ -15,17 +16,9 @@ function asNumber(v: unknown): number | null {
   return null;
 }
 
-function extractQuoteObject(entry: unknown): Record<string, unknown> | null {
-  if (!entry || typeof entry !== "object") return null;
-  const obj = entry as Record<string, unknown>;
-  const quote = obj.quote;
-  if (quote && typeof quote === "object") return quote as Record<string, unknown>;
-  return obj;
-}
-
 function quoteChangePctFromResp(resp: Record<string, unknown>, sym: string): number | null {
   const entry = resp[sym] ?? resp[sym.toUpperCase()];
-  const q = extractQuoteObject(entry);
+  const q = schwabQuoteObjectFromEntry(entry);
   if (!q) return null;
   const last = asNumber(q.lastPrice) ?? null;
   const close = asNumber(q.closePrice) ?? null;

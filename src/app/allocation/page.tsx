@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 
 import { AccountPositionsForAllocation } from "@/app/components/AccountPositionsForAllocation";
+import { DraggableControlColumn } from "@/app/components/DraggableControlColumn";
 import { SymbolLink } from "@/app/components/SymbolLink";
 import { AllocationWeightingChart } from "@/app/components/allocation/AllocationWeightingChart";
 import { FinancePiePanel } from "@/app/components/FinancePiePanel";
@@ -781,96 +782,124 @@ export default function AllocationPage() {
         <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
           Color-coded by symbol. The exposure table and % column always use delta-weighted synthetic MV. Pie and bar charts follow the scope below; when you choose{" "}
           <span className="font-medium text-zinc-800 dark:text-zinc-200">Mark (contracts)</span> (options liquidating value) for charts, slices can diverge from the table while History (if enabled) stays
-          delta-based snapshots.
+          delta-based snapshots. Drag the control blocks on the left by their handle to reorder them.
         </p>
 
-        <div className="mt-4 flex w-full flex-wrap items-center gap-x-3 gap-y-3 border-t border-zinc-200 pt-4 dark:border-white/15 sm:gap-x-5">
-          <div className="flex flex-wrap items-center gap-2 sm:gap-3">
-            <div className="text-sm font-semibold text-zinc-700 dark:text-zinc-300">Scope</div>
-            <div className="grid w-max max-w-full grid-cols-3 gap-1.5">
-              {([
-                { key: "net", label: "All" },
-                { key: "brokerage", label: "Brokerage" },
-                { key: "retirement", label: "Retirement" },
-              ] as const).map((v) => (
-                <button
-                  key={v.key}
-                  type="button"
-                  onClick={() => setPieView(v.key)}
-                  className={
-                    BTN_CLASSES +
-                    " min-w-[6rem] shadow-sm " +
-                    (pieView === v.key
-                      ? "bg-zinc-900 text-white shadow dark:bg-white dark:text-zinc-900"
-                      : "border border-zinc-300 bg-white text-zinc-900 hover:bg-zinc-50 dark:border-white/20 dark:bg-zinc-950 dark:text-zinc-100 dark:hover:bg-zinc-900")
-                  }
-                >
-                  {v.label}
-                </button>
-              ))}
-            </div>
-          </div>
-          <div className="flex flex-wrap items-center gap-2 sm:gap-3">
-            <div className="text-sm font-semibold text-zinc-700 dark:text-zinc-300">Weights</div>
-            <div className="grid w-max max-w-full grid-cols-3 gap-1.5">
-              {(["net", "spot", "synthetic"] as const).map((m) => (
-                <button
-                  key={m}
-                  type="button"
-                  onClick={() => setPieMetric(m)}
-                  className={
-                    BTN_CLASSES +
-                    " min-w-[6rem] shadow-sm " +
-                    (pieMetric === m
-                      ? "bg-zinc-900 text-white shadow dark:bg-white dark:text-zinc-900"
-                      : "border border-zinc-300 bg-white text-zinc-900 hover:bg-zinc-50 dark:border-white/20 dark:bg-zinc-950 dark:text-zinc-100 dark:hover:bg-zinc-900")
-                  }
-                >
-                  {PIE_METRIC_LABEL[m]}
-                </button>
-              ))}
-            </div>
-          </div>
-          {pieMetric === "synthetic" || pieMetric === "net" ? (
-            <div className="flex basis-full flex-wrap items-center gap-2 sm:gap-3">
-              <div className="text-sm font-semibold text-zinc-700 dark:text-zinc-300">Chart options MV</div>
-              <div className="grid w-max max-w-full grid-cols-2 gap-1.5">
-                <button
-                  type="button"
-                  onClick={() => setSyntheticChartBasis("delta")}
-                  className={
-                    BTN_CLASSES +
-                    " min-w-[6rem] shadow-sm " +
-                    (syntheticChartBasis === "delta"
-                      ? "bg-zinc-900 text-white shadow dark:bg-white dark:text-zinc-900"
-                      : "border border-zinc-300 bg-white text-zinc-900 hover:bg-zinc-50 dark:border-white/20 dark:bg-zinc-950 dark:text-zinc-100 dark:hover:bg-zinc-900")
-                  }
-                >
-                  Δ proxy
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setSyntheticChartBasis("mark")}
-                  className={
-                    BTN_CLASSES +
-                    " min-w-[6rem] shadow-sm " +
-                    (syntheticChartBasis === "mark"
-                      ? "bg-zinc-900 text-white shadow dark:bg-white dark:text-zinc-900"
-                      : "border border-zinc-300 bg-white text-zinc-900 hover:bg-zinc-50 dark:border-white/20 dark:bg-zinc-950 dark:text-zinc-100 dark:hover:bg-zinc-900")
-                  }
-                >
-                  Mark (contracts)
-                </button>
-              </div>
-            </div>
-          ) : null}
-          <div className="basis-full text-sm font-semibold text-zinc-700 dark:text-zinc-300 sm:basis-auto sm:ml-auto sm:shrink-0">
-            {pieView === "net" ? "All" : pieView === "brokerage" ? "Brokerage" : "Retirement"} · {PIE_METRIC_LABEL[pieMetric]}
-            {pieMetric !== "spot" && syntheticChartBasis === "mark" ? " · charts @ mark" : ""}
-          </div>
-        </div>
-
         <div className="mt-4 flex min-h-0 w-full min-w-0 flex-1 flex-col gap-3 lg:min-h-[min(28rem,58vh)] lg:flex-row lg:gap-4">
+          <DraggableControlColumn
+            storageKey="fh.allocation.weightControlsOrder.v1"
+            defaultOrder={["scope", "weights", "chartOpts", "selection"]}
+            titles={{
+              scope: "Scope",
+              weights: "Weights",
+              chartOpts: "Chart options MV",
+              selection: "Current",
+            }}
+            className="w-full shrink-0 lg:w-[15.5rem]"
+            renderBlock={(id) => {
+              if (id === "scope") {
+                return (
+                  <div className="grid w-full max-w-full grid-cols-1 gap-1.5 sm:grid-cols-3">
+                    {(
+                      [
+                        { key: "net", label: "All" },
+                        { key: "brokerage", label: "Brokerage" },
+                        { key: "retirement", label: "Retirement" },
+                      ] as const
+                    ).map((v) => (
+                      <button
+                        key={v.key}
+                        type="button"
+                        onClick={() => setPieView(v.key)}
+                        className={
+                          BTN_CLASSES +
+                          " min-w-0 shadow-sm " +
+                          (pieView === v.key
+                            ? "bg-zinc-900 text-white shadow dark:bg-white dark:text-zinc-900"
+                            : "border border-zinc-300 bg-white text-zinc-900 hover:bg-zinc-50 dark:border-white/20 dark:bg-zinc-950 dark:text-zinc-100 dark:hover:bg-zinc-900")
+                        }
+                      >
+                        {v.label}
+                      </button>
+                    ))}
+                  </div>
+                );
+              }
+              if (id === "weights") {
+                return (
+                  <div className="grid w-full max-w-full grid-cols-1 gap-1.5 sm:grid-cols-3">
+                    {(["net", "spot", "synthetic"] as const).map((m) => (
+                      <button
+                        key={m}
+                        type="button"
+                        onClick={() => setPieMetric(m)}
+                        className={
+                          BTN_CLASSES +
+                          " min-w-0 shadow-sm " +
+                          (pieMetric === m
+                            ? "bg-zinc-900 text-white shadow dark:bg-white dark:text-zinc-900"
+                            : "border border-zinc-300 bg-white text-zinc-900 hover:bg-zinc-50 dark:border-white/20 dark:bg-zinc-950 dark:text-zinc-100 dark:hover:bg-zinc-900")
+                        }
+                      >
+                        {PIE_METRIC_LABEL[m]}
+                      </button>
+                    ))}
+                  </div>
+                );
+              }
+              if (id === "chartOpts") {
+                if (pieMetric !== "synthetic" && pieMetric !== "net") {
+                  return (
+                    <p className="text-xs text-zinc-500 dark:text-zinc-500">
+                      Chart MV basis applies when weights are Net or Synthetic.
+                    </p>
+                  );
+                }
+                return (
+                  <div className="grid w-full max-w-full grid-cols-1 gap-1.5 sm:grid-cols-2">
+                    <button
+                      type="button"
+                      onClick={() => setSyntheticChartBasis("delta")}
+                      className={
+                        BTN_CLASSES +
+                        " min-w-0 shadow-sm " +
+                        (syntheticChartBasis === "delta"
+                          ? "bg-zinc-900 text-white shadow dark:bg-white dark:text-zinc-900"
+                          : "border border-zinc-300 bg-white text-zinc-900 hover:bg-zinc-50 dark:border-white/20 dark:bg-zinc-950 dark:text-zinc-100 dark:hover:bg-zinc-900")
+                      }
+                    >
+                      Δ proxy
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setSyntheticChartBasis("mark")}
+                      className={
+                        BTN_CLASSES +
+                        " min-w-0 shadow-sm " +
+                        (syntheticChartBasis === "mark"
+                          ? "bg-zinc-900 text-white shadow dark:bg-white dark:text-zinc-900"
+                          : "border border-zinc-300 bg-white text-zinc-900 hover:bg-zinc-50 dark:border-white/20 dark:bg-zinc-950 dark:text-zinc-100 dark:hover:bg-zinc-900")
+                      }
+                    >
+                      Mark (contracts)
+                    </button>
+                  </div>
+                );
+              }
+              if (id === "selection") {
+                return (
+                  <div className="text-xs font-medium leading-relaxed text-zinc-700 dark:text-zinc-300">
+                    {pieView === "net" ? "All" : pieView === "brokerage" ? "Brokerage" : "Retirement"} · {PIE_METRIC_LABEL[pieMetric]}
+                    {pieMetric !== "spot" && syntheticChartBasis === "mark" ? (
+                      <span className="mt-1 block text-zinc-500 dark:text-zinc-500">Charts use option contract marks</span>
+                    ) : null}
+                  </div>
+                );
+              }
+              return null;
+            }}
+          />
+
           <div className="flex min-h-[min(22rem,48vh)] w-full min-w-0 flex-1 flex-col overflow-visible rounded-xl border border-zinc-200 bg-white p-2 shadow-sm dark:border-white/15 dark:bg-zinc-950 sm:p-3 lg:min-h-0">
             <FinancePiePanel
               layout="split"

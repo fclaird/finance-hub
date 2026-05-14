@@ -12,7 +12,6 @@ export async function GET() {
     const passphrase = getSecretsPassphrase();
     const tok = getSchwabToken(passphrase);
     if (!tok) {
-      // Best-effort: clear the connected cookie so home-gating behaves correctly.
       const resp = NextResponse.json({ ok: true, connected: false });
       resp.cookies.set("fh_schwab_connected", "0", {
         httpOnly: false,
@@ -51,4 +50,3 @@ export async function GET() {
     return NextResponse.json({ ok: false, error: e instanceof Error ? e.message : String(e) }, { status: 500 });
   }
 }
-

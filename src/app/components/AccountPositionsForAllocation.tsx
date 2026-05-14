@@ -44,13 +44,13 @@ export function AccountPositionsForAllocation({ accountId }: { accountId: string
       body: JSON.stringify({ symbols: syms }),
     });
     const json = (await resp.json().catch(() => null)) as
-      | { ok: boolean; quotes?: Array<{ symbol: string; last: number | null; close: number | null }> }
+      | { ok: boolean; quotes?: Array<{ symbol: string; last: number | null; mark?: number | null; close: number | null }> }
       | null;
     if (!json?.ok) return;
     const m = new Map<string, number>();
     for (const q of json.quotes ?? []) {
       const s = (q.symbol ?? "").toUpperCase();
-      const px = (q.last ?? q.close) as number | null;
+      const px = (q.last ?? q.mark ?? q.close) as number | null;
       if (s && px != null && Number.isFinite(px) && px > 0) m.set(s, px);
     }
     setUnderPx(m);
